@@ -1,0 +1,14 @@
+[check_url]
+command_line = "timeout {timeout_s}s curl {url}"
+
+[top]
+command_line = "top -n 1"
+
+[df]
+command_line = "df -h"
+
+[ps]
+command_line = "ps -efww"
+
+[namenode_]
+command_line = "abcd.py {arg1}"

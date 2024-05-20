@@ -1,0 +1,9 @@
+#[alert_infos_to_kafka]
+#type = "kafka"
+#[alert_infos_to_kafka.param]
+#bootstrap_servers = ""
+#topic = ""
+#critical_only = false
+
+[alert_infos_to_stdout]
+kind = "stdout"
