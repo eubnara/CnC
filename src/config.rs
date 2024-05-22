@@ -16,7 +16,7 @@ pub struct CollectorInfo {
     pub description: String,
     pub command_name: String,
     pub store_name: String,
-    pub interval_s: u32,
+    pub crontab: String,
     pub retry_interval_s: u32,
     pub max_check_attempts: u32,
     pub notification_interval_s: u32,

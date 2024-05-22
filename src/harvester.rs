@@ -1,4 +1,6 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::sync::mpsc;
 use std::thread;
 use std::thread::JoinHandle;
@@ -28,6 +30,8 @@ impl<'a> Collector<'a> {
     }
 
     fn run(&self) {
+        // TODO: 일정 주기만큼 sleep & run
+        // TODO: scheduled thread? crontab? sleep?
         let command_line = match self.resolve_command() {
             None => {
                 log::error!("Unknown command name: {}", &self.collector_info.command_name);
@@ -35,9 +39,15 @@ impl<'a> Collector<'a> {
             }
             Some(command_line) => command_line
         };
-        let mut p = Popen::create(&command_line.split_whitespace().collect::<Vec<&str>>(), PopenConfig {
+        // TODO: ${var} 형태는 환경변수에서
+        // TODO: {var} 형태는 다른 변수에서 가져와야, ambari 혹은 설정파일
+        let env = Some(vec![
+            (OsStr::new("my_env").into(), OsStr::new("my_value").into())
+        ]);
+        let mut p = Popen::create(&vec!["sh", "-c", command_line], PopenConfig {
             stdout: Redirection::Pipe,
             stderr: Redirection::Pipe,
+            env,
             ..Default::default()
         }).unwrap();
 
@@ -90,50 +100,57 @@ impl Sender for StdoutSender {
 
 struct StoreChannel {
     tx: mpsc::Sender<String>,
-    rx: mpsc::Receiver<String>,
+    rx: Option<mpsc::Receiver<String>>,
 }
 
 pub struct Harvester {
     config: HarvesterConfig,
-    channel: HashMap<String, mpsc::Sender<String>>,
     handlers: Vec<JoinHandle<()>>,
+    channels: HashMap<String, StoreChannel>,
 }
 
 impl Harvester {
+    fn create_channels(&mut self) {
+        for (store_name, datastore) in self.config.get_datastores() {
+            let (tx, rx) = mpsc::channel::<String>();
+            self.channels.insert(store_name.clone(), StoreChannel { tx, rx: Some(rx) });
+        }
+    }
 
     fn run_senders(&mut self) {
         for (store_name, datastore) in self.config.get_datastores() {
             let kind = datastore.kind.as_str();
-            let (tx, rx) = mpsc::channel::<String>();
-            self.channel.insert(store_name.clone(), tx);
+            let rx = self.channels.get_mut(store_name)
+                .expect(&format!("Unknown store name: {} for sender", store_name))
+                .rx.take()
+                .expect(&format!("Receiver channel for {} already taken.", store_name));
             match kind {
                 "stdout" => {
                     let handler = thread::spawn(move || {
-                       let sender = StdoutSender {
-                           receiver_channel: rx
-                       };
+                        let sender = StdoutSender {
+                            receiver_channel: rx,
+                        };
                         sender.run();
                     });
                     self.handlers.push(handler);
                 }
-                _ => {panic!("Unknown sender kind: {}", kind)}
+                _ => { panic!("Unknown sender kind: {}", kind) }
             }
         }
-        
     }
 
     fn run_collectors(&self) {
         thread::scope(|scope| {
             let mut handlers = vec![];
+            // TODO: tokio 로 변경?
             for (collector_name, collector_info) in self.config.get_collector_infos() {
                 let store_name = &collector_info.store_name;
-                let tx = self.channel.get(store_name).expect(&format!("Unknown store name: {} for collector {}", store_name, collector_name));
+                let collector = Collector {
+                    sender_channel: self.channels.get(store_name).unwrap().tx.clone(),
+                    collector_info: &collector_info,
+                    harvester_config: &self.config,
+                };
                 let h = scope.spawn(move || {
-                    let collector = Collector {
-                        sender_channel: mpsc::Sender::clone(tx),
-                        collector_info: &collector_info,
-                        harvester_config: &self.config,
-                    };
                     collector.run();
                 });
                 handlers.push(h);
@@ -149,8 +166,8 @@ impl Harvester {
 
         let harvester = Harvester {
             config,
-            channel: HashMap::new(),
             handlers: vec![],
+            channels: HashMap::new(),
         };
 
 
@@ -158,6 +175,7 @@ impl Harvester {
     }
 
     pub fn run(&mut self) {
+        self.create_channels();
         self.run_senders();
         self.run_collectors();
         while let Some(h) = self.handlers.pop() {
