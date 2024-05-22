@@ -16,7 +16,8 @@ struct Command {
     command_line: String,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     // TODO: better logger? https://docs.rs/log/latest/log/
     env_logger::init();
     // TODO: get cmd args

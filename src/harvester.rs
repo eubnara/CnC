@@ -1,13 +1,14 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
 use subprocess::{ExitStatus, Popen, PopenConfig, Redirection};
 use log::log;
 use super::config::*;
 use serde_json::json;
+use tokio_cron_scheduler::{Job, JobScheduler};
 
 struct Collector<'a> {
     sender_channel: mpsc::Sender<String>,
@@ -30,8 +31,10 @@ impl<'a> Collector<'a> {
     }
 
     fn run(&self) {
-        // TODO: 일정 주기만큼 sleep & run
-        // TODO: scheduled thread? crontab? sleep?
+        // TODO: 아래 3가지 로직 구현
+        // TODO: retry_interval_s: 재시도 사이 sleep 시간
+        // TODO: max_retries: 최대 재시도 횟수
+        // TODO: notification_interval_s: 같은 알람이 언제 마다 반복될지 (e.g. 실패알람이 너무 자주오는 경우를 막기 위함)
         let command_line = match self.resolve_command() {
             None => {
                 log::error!("Unknown command name: {}", &self.collector_info.command_name);
@@ -91,8 +94,9 @@ struct StdoutSender {
 impl Sender for StdoutSender {
     fn run(&self) {
         loop {
-            for result in self.receiver_channel.recv() {
-                println!("{}", result);
+            match self.receiver_channel.recv() {
+                Ok(result) => println!("{}", result),
+                Err(err) => log::error!("{}", err),
             }
         }
     }
@@ -107,9 +111,26 @@ pub struct Harvester {
     config: HarvesterConfig,
     handlers: Vec<JoinHandle<()>>,
     channels: HashMap<String, StoreChannel>,
+    sched: JobScheduler,
 }
 
 impl Harvester {
+
+    pub async fn new(config_dir: &str) -> Harvester {
+        let config = HarvesterConfig::new(config_dir);
+        let sched = JobScheduler::new().await.unwrap();
+
+        let harvester = Harvester {
+            config,
+            handlers: vec![],
+            channels: HashMap::new(),
+            sched,
+        };
+
+
+        harvester
+    }
+
     fn create_channels(&mut self) {
         for (store_name, datastore) in self.config.get_datastores() {
             let (tx, rx) = mpsc::channel::<String>();
@@ -118,6 +139,7 @@ impl Harvester {
     }
 
     fn run_senders(&mut self) {
+        // TODO: tokio 로 변경?
         for (store_name, datastore) in self.config.get_datastores() {
             let kind = datastore.kind.as_str();
             let rx = self.channels.get_mut(store_name)
@@ -139,40 +161,49 @@ impl Harvester {
         }
     }
 
-    fn run_collectors(&self) {
-        thread::scope(|scope| {
-            let mut handlers = vec![];
-            // TODO: tokio 로 변경?
-            for (collector_name, collector_info) in self.config.get_collector_infos() {
-                let store_name = &collector_info.store_name;
+    async fn run_collectors(&self) {
+        for (collector_name, collector_info) in self.config.get_collector_infos() {
+            let store_name = &collector_info.store_name;
+
+            // let tx = Arc::new(Mutex::new(self.channels.get(store_name).unwrap().tx.clone()));
+            let tx = self.channels.get(store_name).unwrap().tx.clone();
+            tokio::spawn(async move {
                 let collector = Collector {
-                    sender_channel: self.channels.get(store_name).unwrap().tx.clone(),
+                    sender_channel: tx,
                     collector_info: &collector_info,
                     harvester_config: &self.config,
                 };
-                let h = scope.spawn(move || {
-                    collector.run();
-                });
-                handlers.push(h);
-            }
-            while let Some(h) = handlers.pop() {
-                h.join().unwrap();
-            }
-        });
+                collector.run();
+            });
+            // self.sched.add(Job::new_async(collector_info.crontab.clone().as_str(), |uuid, mut l| {
+            //     Box::pin(async move {
+            //         collector.run();
+            //     })
+            // }).unwrap()).await.unwrap();
+        }
     }
 
-    pub fn new(config_dir: &str) -> Harvester {
-        let config = HarvesterConfig::new(config_dir);
-
-        let harvester = Harvester {
-            config,
-            handlers: vec![],
-            channels: HashMap::new(),
-        };
-
-
-        harvester
-    }
+    // fn run_collectors(&self) {
+    //     thread::scope(|scope| {
+    //         let mut handlers = vec![];
+    //         // TODO: tokio 로 변경?
+    //         for (collector_name, collector_info) in self.config.get_collector_infos() {
+    //             let store_name = &collector_info.store_name;
+    //             let collector = Collector {
+    //                 sender_channel: self.channels.get(store_name).unwrap().tx.clone(),
+    //                 collector_info: &collector_info,
+    //                 harvester_config: &self.config,
+    //             };
+    //             let h = scope.spawn(move || {
+    //                 collector.run();
+    //             });
+    //             handlers.push(h);
+    //         }
+    //         while let Some(h) = handlers.pop() {
+    //             h.join().unwrap();
+    //         }
+    //     });
+    // }
 
     pub fn run(&mut self) {
         self.create_channels();

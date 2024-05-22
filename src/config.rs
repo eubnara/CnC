@@ -18,7 +18,7 @@ pub struct CollectorInfo {
     pub store_name: String,
     pub crontab: String,
     pub retry_interval_s: u32,
-    pub max_check_attempts: u32,
+    pub max_retries: u32,
     pub notification_interval_s: u32,
     pub critical: bool,
     pub param: Option<Value>,
