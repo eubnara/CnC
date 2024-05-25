@@ -4,27 +4,21 @@ use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, mpsc, Mutex, RwLock};
 use std::thread;
 use std::thread::JoinHandle;
-use subprocess::{ExitStatus, Popen, PopenConfig, Redirection};
+
 use log::log;
-use super::config::*;
 use serde_json::json;
+use subprocess::{ExitStatus, Popen, PopenConfig, Redirection};
 use tokio_cron_scheduler::{Job, JobScheduler};
+
+use super::config::*;
 
 struct Collector {
     sender_channel: mpsc::Sender<String>,
-    collector_info: CollectorInfo,
+    collector_info: Arc<CollectorInfo>,
     harvester_config: Arc<RwLock<HarvesterConfig>>,
 }
 
 impl Collector {
-    fn new(
-        collector_info: CollectorInfo,
-        sender_channel: mpsc::Sender<String>,
-        harvester_config: Arc<RwLock<HarvesterConfig>>
-    ) -> Collector {
-        Collector { sender_channel, collector_info, harvester_config }
-    }
-
     fn resolve_command(&self) -> Option<String> {
         let command_name = &self.collector_info.command_name;
 
@@ -120,8 +114,7 @@ pub struct Harvester {
 }
 
 impl Harvester {
-    pub async fn new(config_dir: &str) -> Harvester {
-        let config = Arc::new(RwLock::new(HarvesterConfig::new(config_dir)));
+    pub async fn new(config: Arc<RwLock<HarvesterConfig>>) -> Harvester {
         let sched = JobScheduler::new().await.unwrap();
 
         let harvester = Harvester {
@@ -165,67 +158,37 @@ impl Harvester {
         }
     }
 
-    async fn run_collectors(&self) {
-        for (collector_name, collector_info) in self.config.read().unwrap().get_collector_infos() {
-            let collector_info = collector_info.clone();
-            let store_name = &collector_info.store_name;
-            let tx = self.channels.get(store_name).unwrap().tx.clone();
-            let harvester_config = Arc::clone(&self.config);
+    async fn run_collectors(&self, config: Arc<RwLock<HarvesterConfig>>) {
+        for (collector_name, collector_info) in self.config.read().unwrap().get_collector_infos().iter() {
+            let tx = Arc::new(RwLock::new(self.channels.get(&collector_info.store_name).unwrap().tx.clone()));
+            let info = Arc::new(RwLock::new(collector_info.clone()));
+            let config = config.clone();
 
-            // TODO: this works
-            tokio::spawn(async move {
-            
-                let collector = Collector {
-                    sender_channel: tx,
-                    collector_info,
-                    harvester_config,
-                };
-                collector.run();
-            });
-
-            // self.sched.add(Job::new_async(collector_info.crontab.clone().as_str(), |uuid, mut l| {
-            //     Box::pin(async move {
-            //         let collector = Collector {
-            //             sender_channel: tx,
-            //             collector_info,
-            //             harvester_config,
-            //         };
-            //         collector.run();
-            //     })
-            // }).unwrap()).await.unwrap();
+            self.sched.add(Job::new_async(collector_info.crontab.clone().as_str(), move |uuid, mut l| {
+                let harvester_config = Arc::clone(&config.clone());
+                let tx = tx.read().unwrap().clone();
+                let info = Arc::new(info.read().unwrap().clone());
+                Box::pin(async move {
+                    let collector = Collector {
+                        sender_channel: tx,
+                        collector_info: info,
+                        harvester_config,
+                    };
+                    collector.run();
+                })
+            }).unwrap()).await.unwrap();
         }
     }
 
-    // fn run_collectors(&self) {
-    //     thread::scope(|scope| {
-    //         let mut handlers = vec![];
-    //         // TODO: tokio 로 변경?
-    //         for (collector_name, collector_info) in self.config.get_collector_infos() {
-    //             let store_name = &collector_info.store_name;
-    //             let collector = Collector {
-    //                 sender_channel: self.channels.get(store_name).unwrap().tx.clone(),
-    //                 collector_info: &collector_info,
-    //                 harvester_config: &self.config,
-    //             };
-    //             let h = scope.spawn(move || {
-    //                 collector.run();
-    //             });
-    //             handlers.push(h);
-    //         }
-    //         while let Some(h) = handlers.pop() {
-    //             h.join().unwrap();
-    //         }
-    //     });
-    // }
-
-    pub async fn run(&mut self) {
+    pub async fn run(&mut self, config: Arc<RwLock<HarvesterConfig>>) {
         self.create_channels();
         self.run_senders();
-        self.run_collectors().await;
+        self.run_collectors(config).await;
+        if let Err(e) = self.sched.start().await {
+            log::error!("Error on scheduler {:?}", e);
+        }
         while let Some(h) = self.handlers.pop() {
             h.join().unwrap();
         }
-        //     TODO: 간단한 커맨드 실행 후, StdoutSender 조합으로 테스트해보자.
-        //     TODO: join? signal handler? graceful stop?
     }
 }

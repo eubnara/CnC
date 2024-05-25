@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs;
-use std::sync::Arc;
+
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use toml::Value;
@@ -32,14 +32,12 @@ pub struct Datastore {
 }
 
 pub struct HarvesterConfig {
-    config_dir: String,
     commands: HashMap<String, Command>,
-    collector_infos: HashMap<String, CollectorInfo>,
+    pub collector_infos: HashMap<String, CollectorInfo>,
     datastores: HashMap<String, Datastore>,
 }
 
 impl HarvesterConfig {
-
     fn read_toml<T: DeserializeOwned>(config_dir: &str, config_name: &str) -> HashMap<String, T> {
         let config_path = &format!("{}/{}.toml", config_dir, config_name);
         let contents = fs::read_to_string(config_path)
@@ -62,7 +60,6 @@ impl HarvesterConfig {
 
     pub fn new(config_dir: &str) -> HarvesterConfig {
         let config = HarvesterConfig {
-            config_dir: String::from(config_dir),
             commands: HarvesterConfig::read_toml::<Command>(config_dir, "command"),
             collector_infos: HarvesterConfig::read_toml::<CollectorInfo>(config_dir, "collector_info"),
             datastores: HarvesterConfig::read_toml::<Datastore>(config_dir, "datastore"),
