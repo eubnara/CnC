@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs;
+use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use toml::Value;
@@ -10,7 +11,7 @@ pub struct Command {
     pub command_line: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct CollectorInfo {
     pub host_group_name: String,
     pub description: String,

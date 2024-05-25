@@ -36,13 +36,13 @@ max_retries = 3
 notification_interval_s = 60
 critical = true
 
-[check_ps]
-host_group_name = "all"
-description = "ALL::Check escape_test2"
-command_name = "ps"
-store_name = "alert_infos_to_stdout"
-crontab = "1/5 * * * * * *"
-retry_interval_s = 25
-max_retries = 3
-notification_interval_s = 60
-critical = true
+#[check_ps]
+#host_group_name = "all"
+#description = "ALL::Check escape_test2"
+#command_name = "ps"
+#store_name = "alert_infos_to_stdout"
+#crontab = "1/5 * * * * * *"
+#retry_interval_s = 25
+#max_retries = 3
+#notification_interval_s = 60
+#critical = true

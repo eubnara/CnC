@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::sync::{Arc, mpsc, Mutex};
+use std::sync::{Arc, mpsc, Mutex, RwLock};
 use std::thread;
 use std::thread::JoinHandle;
 use subprocess::{ExitStatus, Popen, PopenConfig, Redirection};
@@ -10,22 +10,27 @@ use super::config::*;
 use serde_json::json;
 use tokio_cron_scheduler::{Job, JobScheduler};
 
-struct Collector<'a> {
+struct Collector {
     sender_channel: mpsc::Sender<String>,
-    collector_info: &'a CollectorInfo,
-    harvester_config: &'a HarvesterConfig,
+    collector_info: CollectorInfo,
+    harvester_config: Arc<RwLock<HarvesterConfig>>,
 }
 
-impl<'a> Collector<'a> {
-    fn new<'b>(collector_info: &'b CollectorInfo, sender_channel: mpsc::Sender<String>, harvester_config: &'b HarvesterConfig) -> Collector<'b> {
-        Collector { collector_info, sender_channel, harvester_config }
+impl Collector {
+    fn new(
+        collector_info: CollectorInfo,
+        sender_channel: mpsc::Sender<String>,
+        harvester_config: Arc<RwLock<HarvesterConfig>>
+    ) -> Collector {
+        Collector { sender_channel, collector_info, harvester_config }
     }
 
-    fn resolve_command(&self) -> Option<&String> {
+    fn resolve_command(&self) -> Option<String> {
         let command_name = &self.collector_info.command_name;
+
         //     TODO: params 에 있는 변수와 global 변수도 명령에 주입시킬 수 있도록 하기
-        match self.harvester_config.get_commands().get(command_name) {
-            Some(cmd) => Some(&cmd.command_line),
+        match self.harvester_config.read().unwrap().get_commands().get(command_name) {
+            Some(cmd) => Some(String::from(&cmd.command_line)),
             None => None
         }
     }
@@ -47,7 +52,7 @@ impl<'a> Collector<'a> {
         let env = Some(vec![
             (OsStr::new("my_env").into(), OsStr::new("my_value").into())
         ]);
-        let mut p = Popen::create(&vec!["sh", "-c", command_line], PopenConfig {
+        let mut p = Popen::create(&vec!["sh", "-c", &command_line], PopenConfig {
             stdout: Redirection::Pipe,
             stderr: Redirection::Pipe,
             env,
@@ -108,16 +113,15 @@ struct StoreChannel {
 }
 
 pub struct Harvester {
-    config: HarvesterConfig,
+    config: Arc<RwLock<HarvesterConfig>>,
     handlers: Vec<JoinHandle<()>>,
     channels: HashMap<String, StoreChannel>,
     sched: JobScheduler,
 }
 
 impl Harvester {
-
     pub async fn new(config_dir: &str) -> Harvester {
-        let config = HarvesterConfig::new(config_dir);
+        let config = Arc::new(RwLock::new(HarvesterConfig::new(config_dir)));
         let sched = JobScheduler::new().await.unwrap();
 
         let harvester = Harvester {
@@ -132,7 +136,7 @@ impl Harvester {
     }
 
     fn create_channels(&mut self) {
-        for (store_name, datastore) in self.config.get_datastores() {
+        for (store_name, datastore) in self.config.read().unwrap().get_datastores().into_iter() {
             let (tx, rx) = mpsc::channel::<String>();
             self.channels.insert(store_name.clone(), StoreChannel { tx, rx: Some(rx) });
         }
@@ -140,7 +144,7 @@ impl Harvester {
 
     fn run_senders(&mut self) {
         // TODO: tokio 로 변경?
-        for (store_name, datastore) in self.config.get_datastores() {
+        for (store_name, datastore) in self.config.read().unwrap().get_datastores() {
             let kind = datastore.kind.as_str();
             let rx = self.channels.get_mut(store_name)
                 .expect(&format!("Unknown store name: {} for sender", store_name))
@@ -162,21 +166,30 @@ impl Harvester {
     }
 
     async fn run_collectors(&self) {
-        for (collector_name, collector_info) in self.config.get_collector_infos() {
+        for (collector_name, collector_info) in self.config.read().unwrap().get_collector_infos() {
+            let collector_info = collector_info.clone();
             let store_name = &collector_info.store_name;
-
-            // let tx = Arc::new(Mutex::new(self.channels.get(store_name).unwrap().tx.clone()));
             let tx = self.channels.get(store_name).unwrap().tx.clone();
+            let harvester_config = Arc::clone(&self.config);
+
+            // TODO: this works
             tokio::spawn(async move {
+            
                 let collector = Collector {
                     sender_channel: tx,
-                    collector_info: &collector_info,
-                    harvester_config: &self.config,
+                    collector_info,
+                    harvester_config,
                 };
                 collector.run();
             });
+
             // self.sched.add(Job::new_async(collector_info.crontab.clone().as_str(), |uuid, mut l| {
             //     Box::pin(async move {
+            //         let collector = Collector {
+            //             sender_channel: tx,
+            //             collector_info,
+            //             harvester_config,
+            //         };
             //         collector.run();
             //     })
             // }).unwrap()).await.unwrap();
@@ -205,10 +218,10 @@ impl Harvester {
     //     });
     // }
 
-    pub fn run(&mut self) {
+    pub async fn run(&mut self) {
         self.create_channels();
         self.run_senders();
-        self.run_collectors();
+        self.run_collectors().await;
         while let Some(h) = self.handlers.pop() {
             h.join().unwrap();
         }

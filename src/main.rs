@@ -22,6 +22,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
     // TODO: get cmd args
     let mut harvester = Harvester::new("resources/sample");
-    harvester.run();
+    harvester.await.run().await;
     Ok(())
 }
