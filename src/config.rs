@@ -40,8 +40,8 @@ pub struct HarvesterConfig {
 impl HarvesterConfig {
     fn read_toml<T: DeserializeOwned>(config_dir: &str, config_name: &str) -> HashMap<String, T> {
         let config_path = &format!("{}/{}.toml", config_dir, config_name);
-        let contents = fs::read_to_string(config_path)
-            .expect(&format!("{} not found", config_path));
+        let contents =
+            fs::read_to_string(config_path).expect(&format!("{} not found", config_path));
         toml::from_str::<HashMap<String, T>>(&contents)
             .expect(&format!("Failed to parse {}", config_path))
     }
@@ -61,7 +61,10 @@ impl HarvesterConfig {
     pub fn new(config_dir: &str) -> HarvesterConfig {
         let config = HarvesterConfig {
             commands: HarvesterConfig::read_toml::<Command>(config_dir, "command"),
-            collector_infos: HarvesterConfig::read_toml::<CollectorInfo>(config_dir, "collector_info"),
+            collector_infos: HarvesterConfig::read_toml::<CollectorInfo>(
+                config_dir,
+                "collector_info",
+            ),
             datastores: HarvesterConfig::read_toml::<Datastore>(config_dir, "datastore"),
         };
 

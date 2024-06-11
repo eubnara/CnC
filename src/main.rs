@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::sync::{Arc, RwLock};
+use log::debug;
 
 use serde::Deserialize;
 

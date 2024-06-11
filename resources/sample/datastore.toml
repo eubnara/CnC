@@ -1,9 +1,9 @@
-#[alert_infos_to_kafka]
-#type = "kafka"
-#[alert_infos_to_kafka.param]
-#bootstrap_servers = ""
-#topic = ""
-#critical_only = false
+[alert_infos_to_kafka]
+kind = "kafka"
+[alert_infos_to_kafka.param]
+bootstrap_servers = "localhost:9092"
+topic = "alert_infos"
+critical_only = false
 
-[alert_infos_to_stdout]
-kind = "stdout"
+#[alert_infos_to_stdout]
+#kind = "stdout"

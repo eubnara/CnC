@@ -14,11 +14,33 @@
 #url = "http://localhost:9864"
 
 
+#[check_top]
+#host_group_name = "all"
+#description = "ALL::Check escape_test1"
+#command_name = "escape_test1"
+#store_name = "alert_infos_to_stdout"
+#crontab = "1/3 * * * * * *" # every 3s
+#retry_interval_s = 25
+#max_retries = 3
+#notification_interval_s = 60
+#critical = true
+#
+#[check_df]
+#host_group_name = "all"
+#description = "ALL::Check escape_test2"
+#command_name = "escape_test2"
+#store_name = "alert_infos_to_stdout"
+#crontab = "1/5 * * * * * *"
+#retry_interval_s = 25
+#max_retries = 3
+#notification_interval_s = 60
+#critical = true
+
 [check_top]
 host_group_name = "all"
 description = "ALL::Check escape_test1"
 command_name = "escape_test1"
-store_name = "alert_infos_to_stdout"
+store_name = "alert_infos_to_kafka"
 crontab = "1/3 * * * * * *" # every 3s
 retry_interval_s = 25
 max_retries = 3
@@ -29,7 +51,7 @@ critical = true
 host_group_name = "all"
 description = "ALL::Check escape_test2"
 command_name = "escape_test2"
-store_name = "alert_infos_to_stdout"
+store_name = "alert_infos_to_kafka"
 crontab = "1/5 * * * * * *"
 retry_interval_s = 25
 max_retries = 3
