@@ -2,7 +2,7 @@
 kind = "kafka"
 [alert_infos_to_kafka.param]
 bootstrap_servers = "localhost:9092"
-topic = "alert_infos"
+topic = "alert-infos"
 critical_only = false
 
 #[alert_infos_to_stdout]
