@@ -1,5 +1,5 @@
 [package]
-name = "GMS"
+name = "CNC"
 version = "0.1.0"
 edition = "2021"
 
@@ -16,3 +16,5 @@ shell-escape = "0.1.5"
 tokio-cron-scheduler = "0.10.2"
 tokio = { version = "1.37.0", features = ["rt", "rt-multi-thread", "macros"] }
 rdkafka = { version = "0.36.2", features = ["cmake-build"] }
+clap = { version = "4.5.7", features = ["derive"] }
+gethostname = "0.4.3"

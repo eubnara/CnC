@@ -7,7 +7,7 @@ use serde_json::json;
 use subprocess::{ExitStatus, Popen, PopenConfig, Redirection};
 use tokio::sync::mpsc;
 
-use crate::config::{CollectorInfo, HarvesterConfig};
+use crate::common::config::{CollectorInfo, HarvesterConfig};
 
 pub struct Collector {
     pub sender_channel: mpsc::Sender<String>,

@@ -31,13 +31,14 @@ pub struct Datastore {
     pub param: Option<Value>,
 }
 
-pub struct HarvesterConfig {
-    commands: HashMap<String, Command>,
-    pub collector_infos: HashMap<String, CollectorInfo>,
-    datastores: HashMap<String, Datastore>,
+#[derive(Deserialize, Debug)]
+pub struct Checker {
+    pub kind: String,
+    pub source: String,
+    pub param: Option<Value>,
 }
 
-impl HarvesterConfig {
+trait CncConfig {
     fn read_toml<T: DeserializeOwned>(config_dir: &str, config_name: &str) -> HashMap<String, T> {
         let config_path = &format!("{}/{}.toml", config_dir, config_name);
         let contents =
@@ -45,6 +46,17 @@ impl HarvesterConfig {
         toml::from_str::<HashMap<String, T>>(&contents)
             .expect(&format!("Failed to parse {}", config_path))
     }
+}
+
+pub struct HarvesterConfig {
+    commands: HashMap<String, Command>,
+    pub collector_infos: HashMap<String, CollectorInfo>,
+    datastores: HashMap<String, Datastore>,
+}
+
+impl CncConfig for HarvesterConfig {}
+
+impl HarvesterConfig {
 
     pub fn get_commands(&self) -> &HashMap<String, Command> {
         &self.commands
@@ -66,6 +78,35 @@ impl HarvesterConfig {
                 "collector_info",
             ),
             datastores: HarvesterConfig::read_toml::<Datastore>(config_dir, "datastore"),
+        };
+
+        config
+    }
+}
+
+// TODO: RefineryConfig, datastore.toml 에서 특정 키값을 이용해 receiver 를 만들고, 그에 따라 alerter, metricSender 를 알맞게 만든다. refinery 띄울 때 인자를 받도록 하자. 
+
+pub struct RefineryConfig {
+    datastores: HashMap<String, Datastore>,
+    checkers: HashMap<String, Checker>,
+}
+
+impl CncConfig for RefineryConfig {}
+
+impl RefineryConfig {
+
+    pub fn get_datastores(&self) -> &HashMap<String, Datastore> {
+        &self.datastores
+    }
+    
+    pub fn get_checkers(&self) -> &HashMap<String, Checker> {
+        &self.checkers
+    }
+
+    pub fn new(config_dir: &str) -> RefineryConfig {
+        let config = RefineryConfig {
+            datastores: RefineryConfig::read_toml::<Datastore>(config_dir, "datastore"),
+            checkers: RefineryConfig::read_toml::<Checker>(config_dir, "checker"),
         };
 
         config

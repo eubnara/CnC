@@ -10,15 +10,14 @@ use tokio_cron_scheduler::{Job, JobScheduler};
 use collector::Collector;
 use sender::{KafkaSender, Sender, StdoutSender};
 
-use super::config::*;
+use crate::common::store_channel::StoreChannel;
+
+use super::common::config::*;
 
 mod sender;
 mod collector;
 
-struct StoreChannel {
-    tx: mpsc::Sender<String>,
-    rx: Option<mpsc::Receiver<String>>,
-}
+
 
 pub struct Harvester {
     config: Arc<RwLock<HarvesterConfig>>,
@@ -42,8 +41,8 @@ impl Harvester {
     }
 
     async fn create_channels(&mut self) {
-        for (store_name, datastore) in self.config.read().unwrap().get_datastores().into_iter() {
-            // TODO: buffer size, configuration?
+        for (store_name, datastore) in self.config.read().unwrap().get_datastores() {
+            // TODO: make buffer size configurable?
             let (tx, rx) = mpsc::channel::<String>(1000);
             self.channels
                 .insert(store_name.clone(), StoreChannel { tx, rx: Some(rx) });
@@ -51,7 +50,7 @@ impl Harvester {
     }
 
     async fn run_senders(&mut self) {
-        // TODO: use crossbeam-channel instead of mpsc?
+        // TODO: use crossbeam-channel instead of mpsc for more parallelism?
         for (store_name, datastore) in self.config.read().unwrap().get_datastores() {
             let kind = datastore.kind.as_str();
             // TODO: https://stackoverflow.com/questions/68976937/rust-future-cannot-be-sent-between-threads-safely
@@ -65,8 +64,10 @@ impl Harvester {
                     "Receiver channel for {} already taken.",
                     store_name
                 ));
-
+            let config = self.config.read().unwrap();
+            let param = config.get_datastores().get(&store_name.clone()).unwrap().param.as_ref().unwrap();
             match kind {
+                // TODO: stdout, kafka 를 enum 형태로?, 설정파일에 들어갈 수 있는 값을 쉽게 찾을 수 있게끔?
                 "stdout" => {
                     let handler = tokio::spawn(async move {
                         let mut sender = StdoutSender {
@@ -77,17 +78,18 @@ impl Harvester {
                     self.handlers.push(handler);
                 }
                 "kafka" => {
+                    let bootstrap_servers = String::from(param.get("bootstrap.servers").unwrap().as_str().unwrap());
+                    let topic = String::from(param.get("topic").unwrap().as_str().unwrap());
                     let handler = tokio::spawn(async move {
                         let producer: FutureProducer = ClientConfig::new()
-                            .set("bootstrap.servers", "localhost:9092")
+                            .set("bootstrap.servers", bootstrap_servers)
                             .set("message.timeout.ms", "5000")
                             .create()
                             .expect("Producer creation error");
-                        // TODO: topic 이름 서렂ㅇ에서 가져올 것.
                         let mut sender = KafkaSender {
                             receiver_channel: rx,
                             producer,
-                            topic_name: String::from("alert-infos"),
+                            topic,
                         };
                         sender.run().await;
                     });
@@ -102,7 +104,7 @@ impl Harvester {
 
     async fn run_collectors(&self, config: Arc<RwLock<HarvesterConfig>>) {
         for (collector_name, collector_info) in
-            self.config.read().unwrap().get_collector_infos().iter()
+            self.config.read().unwrap().get_collector_infos()
         {
             let tx = Arc::new(RwLock::new(
                 self.channels

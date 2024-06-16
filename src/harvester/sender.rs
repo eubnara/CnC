@@ -17,10 +17,11 @@ pub trait Sender {
     }
 }
 
+
 pub struct KafkaSender {
     pub receiver_channel: mpsc::Receiver<String>,
     pub producer: FutureProducer,
-    pub topic_name: String,
+    pub topic: String,
 }
 
 impl Sender for KafkaSender {
@@ -29,12 +30,11 @@ impl Sender for KafkaSender {
     }
 
     async fn send(&self, result: String) {
-        // TODO: 키값은 호스트명으로 전달되도록 할 것.
         // TODO: duration 의미?
         let delivery_status = &self.producer.send(
-            FutureRecord::to(&self.topic_name)
+            FutureRecord::to(&self.topic)
                 .payload(&result)
-                .key("localhost"),
+                .key(gethostname::gethostname().into_string().unwrap().as_str()),
             Duration::from_secs(0),
         )
             .await;

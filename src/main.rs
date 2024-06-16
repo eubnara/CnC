@@ -1,30 +1,44 @@
 use std::error::Error;
 use std::sync::{Arc, RwLock};
-use log::debug;
+use clap::Parser;
+use log::error;
 
 use serde::Deserialize;
 
-use GMS::config::HarvesterConfig;
-use GMS::harvester::Harvester;
+use CNC::common::config::HarvesterConfig;
+use CNC::common::config::RefineryConfig;
+use CNC::harvester::Harvester;
+use CNC::refinery::Refinery;
 
-#[derive(Deserialize, Debug)]
-struct Commands {
-    commands: Vec<Command>,
-}
-
-#[derive(Deserialize, Debug)]
-struct Command {
-    command_name: String,
-    command_line: String,
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Args {
+    component: String,
+    #[arg(long)]
+    config_dir: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // TODO: better logger? https://docs.rs/log/latest/log/
     env_logger::init();
-    // TODO: get cmd args
-    let config = Arc::new(RwLock::new(HarvesterConfig::new("resources/sample")));
-    let mut harvester = Harvester::new(config.clone());
-    harvester.await.run(config.clone()).await;
+    let args = Args::parse();
+    let config_dir = args.config_dir.as_str();
+    match args.component.as_str() {
+        "harvester" => {
+            let config = Arc::new(RwLock::new(HarvesterConfig::new(config_dir)));
+            let mut harvester = Harvester::new(config.clone());
+            harvester.await.run(config.clone()).await;
+        },
+        "refinery" => {
+            let config = Arc::new(RwLock::new(RefineryConfig::new(config_dir)));
+            let mut refinery = Refinery::new(config.clone());
+            refinery.await.run().await;
+        },
+        _ => {
+            error!("Supported components are harvester and refinery.");
+        }
+    }
+
     Ok(())
 }
