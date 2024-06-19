@@ -82,6 +82,7 @@ impl Collector {
                 -1
             }
         };
+        // TODO: return_code 가 0 이 아닐 때만 (비정상일 때만) 메시지 보내도록 하기
         let out = out.unwrap_or(String::from(""));
         let err = err.unwrap_or(String::from(""));
         let result = json!({

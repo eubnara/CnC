@@ -28,3 +28,12 @@ cargo run -- harvester --config-dir ./resources/sample
 # run refinery
 cargo run -- refinery --config-dir ./resources/sample
 ```
+
+
+
+# configuration
+
+## checker.toml
+
+- It is not allowed for multiple checkers to consume the same kafka topic.
+

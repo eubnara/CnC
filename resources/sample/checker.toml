@@ -1,12 +1,11 @@
-# TODO: alert 보내는 것이 실패했을 때에 대한 handling
-#[send_alert_to_url]
-#kind = "http_alert"
-#source = "alert_infos_to_kafka"
-#[send_alert_to_url.param]
-#url = "localhost:8080"
-#critical_only = false
-
-
-[send_alert_to_stdout]
-kind = "stdout_alert"
+[send_alert_to_url]
+kind = "http_alert"
 source = "alert_infos_to_kafka"
+[send_alert_to_url.param]
+url = "http://localhost:8080"
+critical_only = false
+
+
+#[send_alert_to_stdout]
+#kind = "stdout_alert"
+#source = "alert_infos_to_kafka"

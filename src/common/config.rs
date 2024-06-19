@@ -84,8 +84,6 @@ impl HarvesterConfig {
     }
 }
 
-// TODO: RefineryConfig, datastore.toml 에서 특정 키값을 이용해 receiver 를 만들고, 그에 따라 alerter, metricSender 를 알맞게 만든다. refinery 띄울 때 인자를 받도록 하자. 
-
 pub struct RefineryConfig {
     datastores: HashMap<String, Datastore>,
     checkers: HashMap<String, Checker>,

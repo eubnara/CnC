@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::str::from_utf8;
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -10,7 +9,7 @@ use tokio::task::JoinHandle;
 
 use crate::common::config::RefineryConfig;
 use crate::common::store_channel::StoreChannel;
-use crate::refinery::checker::{Checker, StdoutAlertChecker};
+use crate::refinery::checker::{Checker, HttpAlertChecker, StdoutAlertChecker};
 use crate::refinery::receiver::{KafkaReceiver, Receiver};
 
 mod receiver;
@@ -52,6 +51,21 @@ impl Refinery {
                     let handler = tokio::spawn(async move {
                         let mut checker = StdoutAlertChecker {
                             receiver_channel: rx,
+                        };
+                        checker.check().await;
+                    });
+                    self.handlers.push(handler);
+                }
+                "http_alert" => {
+                    let checker_config = crate::common::config::Checker {
+                        kind: checker.kind.clone(),
+                        source: checker.source.clone(),
+                        param: checker.param.clone(),
+                    };
+                    let handler = tokio::spawn(async move {
+                        let mut checker = HttpAlertChecker {
+                            receiver_channel: rx,
+                            checker_config,
                         };
                         checker.check().await;
                     });
