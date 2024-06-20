@@ -7,7 +7,7 @@ use rdkafka::consumer::{Consumer, StreamConsumer};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::common::config::RefineryConfig;
+use crate::common::config::{CheckerInfo, RefineryConfig};
 use crate::common::store_channel::StoreChannel;
 use crate::refinery::checker::{Checker, HttpAlertChecker, StdoutAlertChecker};
 use crate::refinery::receiver::{KafkaReceiver, Receiver};
@@ -31,7 +31,7 @@ impl Refinery {
     }
 
     async fn create_channels(&mut self) {
-        for (checker_name, checker) in self.config.read().unwrap().get_checkers() {
+        for (checker_name, _) in self.config.read().unwrap().get_checkers() {
             let (tx, rx) = mpsc::channel::<String>(1000);
             self.channels.insert(checker_name.clone(), StoreChannel { tx, rx: Some(rx) });
         }
@@ -57,7 +57,7 @@ impl Refinery {
                     self.handlers.push(handler);
                 }
                 "http_alert" => {
-                    let checker_config = crate::common::config::Checker {
+                    let checker_config = CheckerInfo {
                         kind: checker.kind.clone(),
                         source: checker.source.clone(),
                         param: checker.param.clone(),

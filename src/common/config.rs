@@ -32,7 +32,7 @@ pub struct Datastore {
 }
 
 #[derive(Deserialize, Debug)]
-pub struct Checker {
+pub struct CheckerInfo {
     pub kind: String,
     pub source: String,
     pub param: Option<Value>,
@@ -86,7 +86,7 @@ impl HarvesterConfig {
 
 pub struct RefineryConfig {
     datastores: HashMap<String, Datastore>,
-    checkers: HashMap<String, Checker>,
+    checkers: HashMap<String, CheckerInfo>,
 }
 
 impl CncConfig for RefineryConfig {}
@@ -97,14 +97,14 @@ impl RefineryConfig {
         &self.datastores
     }
     
-    pub fn get_checkers(&self) -> &HashMap<String, Checker> {
+    pub fn get_checkers(&self) -> &HashMap<String, CheckerInfo> {
         &self.checkers
     }
 
     pub fn new(config_dir: &str) -> RefineryConfig {
         let config = RefineryConfig {
             datastores: RefineryConfig::read_toml::<Datastore>(config_dir, "datastore"),
-            checkers: RefineryConfig::read_toml::<Checker>(config_dir, "checker"),
+            checkers: RefineryConfig::read_toml::<CheckerInfo>(config_dir, "checker_info"),
         };
 
         config

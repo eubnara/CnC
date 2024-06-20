@@ -33,7 +33,7 @@ cargo run -- refinery --config-dir ./resources/sample
 
 # configuration
 
-## checker.toml
+## checker_info.toml
 
 - It is not allowed for multiple checkers to consume the same kafka topic.
 
