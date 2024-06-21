@@ -90,9 +90,13 @@ impl Refinery {
             let source_datastore = config.get_datastores().get(source)
                 .expect("Unexpected source");
             let source_kind = source_datastore.kind.as_str();
-            let param = source_datastore.param.as_ref().unwrap();
+            let param = source_datastore.param.as_ref();
             let receiver = match source_kind {
                 "kafka" => {
+                    let param = match param {
+                        Some(param) => param,
+                        None => panic!("Empty param for kafka source: {}", source)
+                    };
                     let group_instance_id = format!("refinery-{}", gethostname::gethostname().into_string().unwrap());
                     let consumer: StreamConsumer = ClientConfig::new()
                         .set("group.id", "refinery")

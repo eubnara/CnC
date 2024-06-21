@@ -4,7 +4,7 @@ use std::fs;
 
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use toml::Value;
+use toml::{Table, Value};
 
 #[derive(Deserialize, Debug)]
 pub struct Command {
@@ -12,17 +12,22 @@ pub struct Command {
 }
 
 #[derive(Deserialize, Debug, Clone)]
+pub struct CollectorInfoParam {
+    pub name: String,
+    pub param: Option<Table>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
 pub struct CollectorInfo {
     pub host_group_name: String,
     pub description: String,
-    pub command_name: String,
+    pub command: CollectorInfoParam,
     pub store_name: String,
     pub crontab: String,
     pub retry_interval_s: u32,
     pub max_retries: u32,
     pub notification_interval_s: u32,
     pub critical: bool,
-    pub param: Option<Value>,
 }
 
 #[derive(Deserialize, Debug)]

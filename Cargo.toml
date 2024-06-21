@@ -19,3 +19,4 @@ rdkafka = { version = "0.36.2", features = ["cmake-build"] }
 clap = { version = "4.5.7", features = ["derive"] }
 gethostname = "0.4.3"
 reqwest = { version = "0.12.5", features = ["json"] }
+leon = "3.0.1"

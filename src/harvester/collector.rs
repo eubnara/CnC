@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use leon::Template;
 
 use log::error;
 use serde_json::json;
@@ -17,7 +19,7 @@ pub struct Collector {
 
 impl Collector {
     fn resolve_command(&self) -> Option<String> {
-        let command_name = &self.collector_info.command_name;
+        let command_name = &self.collector_info.command.name;
 
         //     TODO: params 에 있는 변수와 global 변수도 명령에 주입시킬 수 있도록 하기
         match self
@@ -37,28 +39,33 @@ impl Collector {
         // TODO: retry_interval_s: 재시도 사이 sleep 시간
         // TODO: max_retries: 최대 재시도 횟수
         // TODO: notification_interval_s: 같은 알람이 언제 마다 반복될지 (e.g. 실패알람이 너무 자주오는 경우를 막기 위함)
-        let command_line = match self.resolve_command() {
+        let cmd = match self.resolve_command() {
             None => {
                 log::error!(
                     "Unknown command name: {}",
-                    &self.collector_info.command_name
+                    &self.collector_info.command.name
                 );
                 return;
             }
-            Some(command_line) => command_line,
+            Some(cmd) => cmd,
         };
-        // TODO: ${var} 형태는 환경변수에서
-        // TODO: {var} 형태는 다른 변수에서 가져와야, ambari 혹은 설정파일
-        let env = Some(vec![(
-            OsStr::new("my_env").into(),
-            OsStr::new("my_value").into(),
-        )]);
+
+        let cmd = Template::parse(&cmd).unwrap();
+        let mut values: HashMap<String, String> = HashMap::new();
+        if let Some(param) = self.collector_info.command.param.as_ref() {
+            for (k, v) in param.iter() {
+                values.insert(k.clone(), v.to_string());
+            }
+        }
+
+        let cmd = cmd.render(&values).unwrap();
+
+        // "sh -c" is used to support environment variables.
         let mut p = Popen::create(
-            &vec!["sh", "-c", &command_line],
+            &vec!["sh", "-c", &cmd],
             PopenConfig {
                 stdout: Redirection::Pipe,
                 stderr: Redirection::Pipe,
-                env,
                 ..Default::default()
             },
         )

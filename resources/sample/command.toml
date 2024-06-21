@@ -14,7 +14,7 @@ command_line = "ps -efww"
 command_line = "abcd.py {arg1}"
 
 [escape_test1]
-command_line = "echo $my_env && echo $my_env || echo hi"
+command_line = "echo {key1} && echo {key2} || echo hi"
 
 [escape_test2]
 command_line = "echo $my_env"

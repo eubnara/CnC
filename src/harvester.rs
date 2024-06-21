@@ -65,7 +65,7 @@ impl Harvester {
                     store_name
                 ));
             let config = self.config.read().unwrap();
-            let param = config.get_datastores().get(&store_name.clone()).unwrap().param.as_ref().unwrap();
+            let param = config.get_datastores().get(&store_name.clone()).unwrap().param.as_ref();
             match kind {
                 // TODO: stdout, kafka 를 enum 형태로?, 설정파일에 들어갈 수 있는 값을 쉽게 찾을 수 있게끔?
                 "stdout" => {
@@ -78,6 +78,10 @@ impl Harvester {
                     self.handlers.push(handler);
                 }
                 "kafka" => {
+                    let param = match param {
+                        Some(param) => param,
+                        None => panic!("Empty param for kafka sender: {}", store_name)
+                    };
                     let bootstrap_servers = String::from(param.get("bootstrap.servers").unwrap().as_str().unwrap());
                     let topic = String::from(param.get("topic").unwrap().as_str().unwrap());
                     let handler = tokio::spawn(async move {
