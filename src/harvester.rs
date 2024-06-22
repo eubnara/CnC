@@ -1,9 +1,10 @@
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::time::SystemTime;
 
 use rdkafka::ClientConfig;
 use rdkafka::producer::FutureProducer;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tokio_cron_scheduler::{Job, JobScheduler};
 
@@ -16,7 +17,6 @@ use super::common::config::*;
 
 mod sender;
 mod collector;
-
 
 
 pub struct Harvester {
@@ -41,7 +41,7 @@ impl Harvester {
     }
 
     async fn create_channels(&mut self) {
-        for (store_name, datastore) in self.config.read().unwrap().get_datastores() {
+        for (store_name, datastore) in self.config.read().await.get_datastores() {
             // TODO: make buffer size configurable?
             let (tx, rx) = mpsc::channel::<String>(1000);
             self.channels
@@ -51,7 +51,7 @@ impl Harvester {
 
     async fn run_senders(&mut self) {
         // TODO: use crossbeam-channel instead of mpsc for more parallelism?
-        for (store_name, datastore) in self.config.read().unwrap().get_datastores() {
+        for (store_name, datastore) in self.config.read().await.get_datastores() {
             let kind = datastore.kind.as_str();
             // TODO: https://stackoverflow.com/questions/68976937/rust-future-cannot-be-sent-between-threads-safely
             let rx = self
@@ -64,7 +64,7 @@ impl Harvester {
                     "Receiver channel for {} already taken.",
                     store_name
                 ));
-            let config = self.config.read().unwrap();
+            let config = self.config.read().await;
             let param = config.get_datastores().get(&store_name.clone()).unwrap().param.as_ref();
             match kind {
                 // TODO: stdout, kafka 를 enum 형태로?, 설정파일에 들어갈 수 있는 값을 쉽게 찾을 수 있게끔?
@@ -108,36 +108,38 @@ impl Harvester {
 
     async fn run_collectors(&self, config: Arc<RwLock<HarvesterConfig>>) {
         for (collector_name, collector_info) in
-            self.config.read().unwrap().get_collector_infos()
+            self.config.read().await.get_collector_infos()
         {
-            let tx = Arc::new(RwLock::new(
+            let tx = Arc::new(
                 self.channels
                     .get(&collector_info.store_name)
                     .unwrap()
                     .tx
                     .clone(),
-            ));
-            let info = Arc::new(RwLock::new(collector_info.clone()));
+            );
             let config = config.clone();
+            let last_notification_time = Arc::new(RwLock::new(SystemTime::now()));
+            let collector_info = Arc::new(collector_info.clone());
             self.sched
                 .add(
                     Job::new_async(
                         collector_info.crontab.clone().as_str(),
                         move |uuid, mut l| {
                             let harvester_config = Arc::clone(&config.clone());
-                            let tx = tx.read().unwrap().clone();
-                            let info = Arc::new(info.read().unwrap().clone());
+                            let info = Arc::clone(&collector_info);
+                            let last_notification_time = Arc::clone(&last_notification_time);
+                            let tx = (*tx).clone();
                             Box::pin(async move {
-                                let collector = Collector {
+                                let mut collector = Collector {
                                     sender_channel: tx,
                                     collector_info: info,
                                     harvester_config,
+                                    last_notification_time,
                                 };
                                 collector.run().await;
                             })
                         },
-                    )
-                        .unwrap(),
+                    ).unwrap()
                 )
                 .await
                 .unwrap();

@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::RwLock;
 
 use rdkafka::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::common::config::{CheckerInfo, RefineryConfig};
@@ -31,14 +30,14 @@ impl Refinery {
     }
 
     async fn create_channels(&mut self) {
-        for (checker_name, _) in self.config.read().unwrap().get_checkers() {
+        for (checker_name, _) in self.config.read().await.get_checkers() {
             let (tx, rx) = mpsc::channel::<String>(1000);
             self.channels.insert(checker_name.clone(), StoreChannel { tx, rx: Some(rx) });
         }
     }
 
     async fn run_checkers(&mut self) {
-        for (checker_name, checker) in self.config.write().unwrap().get_checkers() {
+        for (checker_name, checker) in self.config.write().await.get_checkers() {
             let kind = checker.kind.as_str();
             let rx = self
                 .channels
@@ -79,14 +78,14 @@ impl Refinery {
     }
 
     async fn run_receivers(&mut self) {
-        for (checker_name, checker) in self.config.read().unwrap().get_checkers() {
+        for (checker_name, checker) in self.config.read().await.get_checkers() {
             let tx = self.channels
                 .get(checker_name)
                 .unwrap()
                 .tx
                 .clone();
             let source = &checker.source;
-            let config = self.config.read().unwrap();
+            let config = self.config.read().await;
             let source_datastore = config.get_datastores().get(source)
                 .expect("Unexpected source");
             let source_kind = source_datastore.kind.as_str();

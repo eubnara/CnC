@@ -19,3 +19,5 @@ command_line = "echo {key1} && echo {key2} || echo hi"
 [escape_test2]
 command_line = "echo $my_env"
 
+[return_error_code_1]
+command_line = "echo error >&2; exit 1"

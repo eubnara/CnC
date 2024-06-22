@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs;
+use std::time::SystemTime;
 
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -28,6 +29,7 @@ pub struct CollectorInfo {
     pub max_retries: u32,
     pub notification_interval_s: u32,
     pub critical: bool,
+    pub last_notification_time: Option<SystemTime>,
 }
 
 #[derive(Deserialize, Debug)]

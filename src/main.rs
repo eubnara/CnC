@@ -1,9 +1,10 @@
 use std::error::Error;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc};
 use clap::Parser;
 use log::error;
 
 use serde::Deserialize;
+use tokio::sync::RwLock;
 
 use CNC::common::config::HarvesterConfig;
 use CNC::common::config::RefineryConfig;

@@ -36,33 +36,46 @@
 #notification_interval_s = 60
 #critical = true
 
-[check_top]
-host_group_name = "all"
-description = "ALL::Check escape_test1"
-store_name = "alert_infos_to_kafka"
-crontab = "1/3 * * * * * *" # every 3s
-retry_interval_s = 25
-max_retries = 3
-notification_interval_s = 60
-critical = true
-[check_top.command]
-name = "escape_test1"
-[check_top.command.param]
-key1 = "hello"
-key2 = "world"
+#[check_top]
+#host_group_name = "all"
+#description = "ALL::Check escape_test1"
+#store_name = "alert_infos_to_kafka"
+#crontab = "1/3 * * * * * *" # every 3s
+#retry_interval_s = 25
+#max_retries = 3
+#notification_interval_s = 60
+#critical = true
+#[check_top.command]
+#name = "escape_test1"
+#[check_top.command.param]
+#key1 = "hello"
+#key2 = "world"
+#
+#
+#[check_df]
+#host_group_name = "all"
+#description = "ALL::Check escape_test2"
+#store_name = "alert_infos_to_kafka"
+#crontab = "1/5 * * * * * *"
+#retry_interval_s = 25
+#max_retries = 3
+#notification_interval_s = 60
+#critical = true
+#[check_df.command]
+#name = "df"
 
 
-[check_df]
+[return_error_code]
 host_group_name = "all"
-description = "ALL::Check escape_test2"
+description = "ALL::Return just error code"
 store_name = "alert_infos_to_kafka"
-crontab = "1/5 * * * * * *"
-retry_interval_s = 25
-max_retries = 3
-notification_interval_s = 60
+crontab = "1/10 * * * * * *"
+retry_interval_s = 1
+max_retries = 2
+notification_interval_s = 30
 critical = true
-[check_df.command]
-name = "escape_test2"
+[return_error_code.command]
+name = "return_error_code_1"
 
 
 #[check_ps]
