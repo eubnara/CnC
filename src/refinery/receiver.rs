@@ -1,9 +1,6 @@
-use std::io::Read;
-use std::str::from_utf8;
-use tokio::time::{sleep, Duration};
 use log::error;
-use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
-use rdkafka::{Message, Offset, TopicPartitionList};
+use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::Message;
 use tokio::sync::mpsc;
 
 pub trait Receiver {

@@ -107,6 +107,9 @@ impl Harvester {
     }
 
     async fn run_collectors(&self, config: Arc<RwLock<HarvesterConfig>>) {
+        // TODO: "ALL" keyword 는 enum 혹은 예약 키워드로.
+        // TODO: harvester 가 속한 hostgroup 들이 어디있는지 알아오는 과정이 필요하다. hostgroup.toml 과 ambari 정보로부터 알아온다.
+        // TODO: hostgroup.toml 정보와 ambari 정보를 합치는 건 별도의 대몬 프로세스가 진행. hdfs 로부터 저장하고 받아온다.
         for (collector_name, collector_info) in
             self.config.read().await.get_collector_infos()
         {
@@ -124,7 +127,7 @@ impl Harvester {
                 .add(
                     Job::new_async(
                         collector_info.crontab.clone().as_str(),
-                        move |uuid, mut l| {
+                        move |_, _| {
                             let harvester_config = Arc::clone(&config.clone());
                             let info = Arc::clone(&collector_info);
                             let last_notification_time = Arc::clone(&last_notification_time);

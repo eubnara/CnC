@@ -1,9 +1,8 @@
 use std::error::Error;
-use std::sync::{Arc};
+use std::sync::Arc;
+
 use clap::Parser;
 use log::error;
-
-use serde::Deserialize;
 use tokio::sync::RwLock;
 
 use CNC::common::config::HarvesterConfig;
@@ -17,6 +16,8 @@ struct Args {
     component: String,
     #[arg(long)]
     config_dir: String,
+    #[arg(long, default_value(""))]
+    config_tar_url: String,
 }
 
 #[tokio::main]
@@ -25,17 +26,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
     let args = Args::parse();
     let config_dir = args.config_dir.as_str();
+    let config_tar_url = args.config_tar_url.as_str();
+
     match args.component.as_str() {
         "harvester" => {
-            let config = Arc::new(RwLock::new(HarvesterConfig::new(config_dir)));
+            let config = Arc::new(
+                RwLock::new(
+                    HarvesterConfig::new(config_dir, config_tar_url).await));
             let mut harvester = Harvester::new(config.clone());
             harvester.await.run(config.clone()).await;
-        },
+        }
         "refinery" => {
-            let config = Arc::new(RwLock::new(RefineryConfig::new(config_dir)));
+            let config = Arc::new(
+                RwLock::new(
+                    RefineryConfig::new(config_dir, config_tar_url).await));
             let mut refinery = Refinery::new(config.clone());
             refinery.await.run().await;
-        },
+        }
         _ => {
             error!("Supported components are harvester and refinery.");
         }

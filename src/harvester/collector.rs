@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use leon::Template;
 
-use log::{debug, error};
+use leon::Template;
+use log::error;
 use serde_json::json;
 use subprocess::{ExitStatus, Popen, PopenConfig, Redirection};
 use tokio::sync::{mpsc, RwLock};
@@ -22,7 +22,6 @@ impl Collector {
     async fn resolve_command(&self) -> Option<String> {
         let command_name = &self.collector_info.command.name;
 
-        //     TODO: params 에 있는 변수와 global 변수도 명령에 주입시킬 수 있도록 하기
         match self
             .harvester_config
             .read()
@@ -49,6 +48,7 @@ impl Collector {
 
         let cmd = Template::parse(&cmd).unwrap();
         let mut values: HashMap<String, String> = HashMap::new();
+        //     TODO: global 변수도 명령에 주입시킬 수 있도록 하기
         if let Some(param) = self.collector_info.command.param.as_ref() {
             for (k, v) in param.iter() {
                 values.insert(k.clone(), v.to_string());
@@ -61,7 +61,7 @@ impl Collector {
         let retry_interval_s = self.collector_info.retry_interval_s as u64;
         let notification_interval_s = self.collector_info.notification_interval_s as u64;
         let mut result = json!({});
-        for i in 0..max_retries {
+        for _ in 0..max_retries {
             // "sh -c" is used to support environment variables.
             let mut p = Popen::create(
                 &vec!["sh", "-c", &cmd],
