@@ -4,12 +4,14 @@ use std::fs;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use flate2::read::GzDecoder;
 use log::debug;
+use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use subprocess::{ExitStatus, Popen, PopenConfig, Redirection};
 use tar::Archive;
 use toml::{Table, Value};
 
@@ -86,10 +88,58 @@ trait CncConfig {
             .tempfile()
             .unwrap();
         let mut temp_tar_gz = File::create(&temp_tar_gz_path).unwrap();
-        let mut res = reqwest::get(config_tar_url).await.unwrap();
-        while let Some(chunk) = res.chunk().await.unwrap() {
-            temp_tar_gz.write(&chunk.to_vec()).unwrap();
+        let mut res = reqwest::ClientBuilder::new()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap()
+            .get(config_tar_url)
+            .send()
+            .await
+            .unwrap();
+        match res.status() {
+            StatusCode::UNAUTHORIZED => {
+                // handle for SPNEGO
+                match res.headers().get("WWW-Authenticate") {
+                    Some(val) => {
+                        if val != "Negotiate" {
+                            panic!("Failed to get tar file. {}", res.text().await.unwrap());
+                        }
+                        let cmd = format!(
+                            "curl -u : --negotiate -k -L {} -o {}",
+                            config_tar_url,
+                            temp_tar_gz_path.path().to_str().unwrap(),
+                        );
+                        let mut p = Popen::create(
+                            &vec!["sh", "-c", &cmd],
+                            PopenConfig {
+                                stdout: Redirection::Pipe,
+                                stderr: Redirection::Pipe,
+                                ..Default::default()
+                            },
+                        ).unwrap();
+
+                        let (stdout, stderr) = p.communicate(None).unwrap();
+                        match p.wait_timeout(Duration::new(10, 0)) {
+                            Ok(Some(ExitStatus::Exited(_))) => {}
+                            _ => panic!("Failed to get tar file using curl.
+stdout: {}
+stderr: {}",
+                                        stdout.unwrap_or_default(),
+                                        stderr.unwrap_or_default(),
+                            ),
+                        };
+                    }
+                    _ => panic!("Failed to get tar file. {}", res.text().await.unwrap()),
+                }
+            }
+            StatusCode::OK => {
+                while let Some(chunk) = res.chunk().await.unwrap() {
+                    temp_tar_gz.write(&chunk.to_vec()).unwrap();
+                }
+            }
+            _ => panic!("Failed to get tar file. {}", res.text().await.unwrap()),
         }
+
         let tar_gz = File::open(&temp_tar_gz_path).unwrap();
         let tar = GzDecoder::new(tar_gz);
         let mut archive = Archive::new(tar);
@@ -99,7 +149,7 @@ trait CncConfig {
             .expect("Failed to open TAR_NAME file.");
         file.write(&config_tar_name.as_bytes())
             .expect("Failed to write current tar name on TAR_NAME file.");
-        
+
         // tempfile will be automatically removed. You don't have to remove it explicitly.
         Some(tar_dir)
     }
@@ -133,7 +183,7 @@ impl HarvesterConfig {
             config_dir,
             "collector_info",
         );
-        
+
         if let Some(tar_dir) = HarvesterConfig::download_config_tar(config_dir, config_tar_url).await {
             datastores.extend(HarvesterConfig::read_toml::<Datastore>(&tar_dir, "datastore"));
             commands.extend(HarvesterConfig::read_toml::<Command>(&tar_dir, "command"));
