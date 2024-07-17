@@ -21,7 +21,7 @@ pub struct Refinery {
 }
 
 impl Refinery {
-    pub async fn new(config: Arc<RwLock<RefineryConfig>>) -> Refinery {
+    pub fn new(config: Arc<RwLock<RefineryConfig>>) -> Refinery {
         Refinery {
             config,
             handlers: vec![],

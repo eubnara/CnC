@@ -1,0 +1,23 @@
+[common]
+
+[common.hosts_kafka]
+url = "localhost:9092"
+topic = "hosts"
+polling_interval_s = 15
+
+[common.infos_kafka]
+url = "localhost:9092"
+topic = "infos"
+
+
+[config_updater]
+port = 10023
+poll_interval_s = 15
+#config_git_url = ""
+#config_upload_curl_cmd = ""
+
+[config_updater.ambari]
+url = "localhost:8080"
+user = "admin"
+# TODO: read pw from password_file
+password_file = "ambari_password"

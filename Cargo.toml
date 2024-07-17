@@ -14,7 +14,7 @@ env_logger = "0.11.3"
 serde_json = "1.0.117"
 shell-escape = "0.1.5"
 tokio-cron-scheduler = "0.10.2"
-tokio = { version = "1.37.0", features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1.38.1", features = ["rt", "rt-multi-thread", "macros"] }
 rdkafka = { version = "0.36.2", features = ["cmake-build"] }
 clap = { version = "4.5.7", features = ["derive"] }
 gethostname = "0.4.3"
@@ -23,3 +23,5 @@ leon = "3.0.1"
 tempfile = "3.10.1"
 flate2 = "1.0.30"
 tar = "0.4.41"
+axum = "0.7.5"
+uuid = { version = "1.8.0", features = ["v4"] }

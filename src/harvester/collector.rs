@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use leon::Template;
-use log::error;
+use log::{debug, error};
 use serde_json::json;
 use subprocess::{ExitStatus, Popen, PopenConfig, Redirection};
 use tokio::sync::{mpsc, RwLock};

@@ -19,3 +19,6 @@ Cargo.lock
 /target
 
 .idea
+
+**/_downloaded_config_tar
+**/*.tar.gz

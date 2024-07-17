@@ -13,6 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use subprocess::{ExitStatus, Popen, PopenConfig, Redirection};
 use tar::Archive;
+use tempfile::{tempdir, TempDir};
 use toml::{Table, Value};
 
 #[derive(Deserialize, Debug)]
@@ -53,8 +54,44 @@ pub struct CheckerInfo {
     pub param: Option<Value>,
 }
 
-trait CncConfig {
-    fn read_toml<T: DeserializeOwned>(config_dir: &str, config_name: &str) -> HashMap<String, T> {
+#[derive(Deserialize, Debug)]
+pub struct KafkaInfo {
+    pub url: String,
+    pub topic: String,
+    pub polling_interval_s: Option<u32>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct CncCommon {
+    pub hosts_kafka: KafkaInfo,
+    pub infos_kafka: KafkaInfo,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct CncConfigUpdaterAmbari {
+    pub url: String,
+    pub user: String,
+    pub password_file: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct CncConfigUpdater {
+    pub port: u32,
+    pub poll_interval_s: u64,
+    pub config_git_url: String,
+    pub config_upload_curl_cmd: String,
+    pub ambari: Option<CncConfigUpdaterAmbari>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct Cnc {
+    pub common: CncCommon,
+    pub config_updater: CncConfigUpdater,
+}
+
+
+pub trait CncConfigHandler {
+    fn read_items<T: DeserializeOwned>(config_dir: &str, config_name: &str) -> HashMap<String, T> {
         let config_path = &format!("{}/{}.toml", config_dir, config_name);
         let contents =
             fs::read_to_string(config_path).expect(&format!("{} not found", config_path));
@@ -62,26 +99,20 @@ trait CncConfig {
             .expect(&format!("Failed to parse {}", config_path))
     }
 
-    async fn download_config_tar(config_dir: &str, config_tar_url: &str) -> Option<String> {
-        let tar_dir = format!("{config_dir}/_downloaded_config_tar");
-        let tar_name_file = format!("{tar_dir}/TAR_NAME");
+    fn read_item<T: DeserializeOwned>(config_dir: &str, config_name: &str) -> T {
+        let config_path = &format!("{}/{}.toml", config_dir, config_name);
+        let contents =
+            fs::read_to_string(config_path).expect(&format!("{} not found", config_path));
+        toml::from_str::<T>(&contents)
+            .expect(&format!("Failed to parse {}", config_path))
+    }
+
+
+    async fn download_config(config_tar_url: &str) -> Option<TempDir> {
         if config_tar_url.is_empty() {
             return None;
         }
-        let config_tar_name = Path::new(&config_tar_url).file_name().unwrap().to_str().unwrap().trim();
-
-        if Path::new(&tar_dir).is_dir() {
-            if Path::new(&tar_name_file).is_file() {
-                let previous_tar_name = fs::read_to_string(&tar_name_file).unwrap();
-                if previous_tar_name == config_tar_name {
-                    debug!("Desired configs already exist. skip it.");
-                    return Some(tar_dir);
-                }
-            }
-        } else {
-            fs::create_dir(&tar_dir).unwrap();
-        }
-
+        let tar_dir = tempdir().unwrap();
         let temp_tar_gz_path = tempfile::Builder::new()
             .prefix("cnc-config")
             .suffix(".tar.gz")
@@ -145,12 +176,7 @@ stderr: {}",
         let mut archive = Archive::new(tar);
         archive.unpack(&tar_dir).unwrap();
 
-        let mut file = File::create(tar_name_file)
-            .expect("Failed to open TAR_NAME file.");
-        file.write(&config_tar_name.as_bytes())
-            .expect("Failed to write current tar name on TAR_NAME file.");
 
-        // tempfile will be automatically removed. You don't have to remove it explicitly.
         Some(tar_dir)
     }
 }
@@ -159,9 +185,12 @@ pub struct HarvesterConfig {
     commands: HashMap<String, Command>,
     pub collector_infos: HashMap<String, CollectorInfo>,
     datastores: HashMap<String, Datastore>,
+    config_dir: String,
+    config_tar_url: String,
+    pub version: Option<String>,
 }
 
-impl CncConfig for HarvesterConfig {}
+impl CncConfigHandler for HarvesterConfig {}
 
 impl HarvesterConfig {
     pub fn get_commands(&self) -> &HashMap<String, Command> {
@@ -176,38 +205,57 @@ impl HarvesterConfig {
         &self.datastores
     }
 
-    pub async fn new(config_dir: &str, config_tar_url: &str) -> HarvesterConfig {
-        let mut datastores = HarvesterConfig::read_toml::<Datastore>(config_dir, "datastore");
-        let mut commands = HarvesterConfig::read_toml::<Command>(config_dir, "command");
-        let mut collector_infos = HarvesterConfig::read_toml::<CollectorInfo>(
-            config_dir,
+    pub async fn reload_config(&mut self) {
+        if let Some(temp_dir) = Self::download_config(&self.config_tar_url).await {
+            let config_path = Path::new(&self.config_dir);
+            if config_path.is_dir() {
+                fs::remove_dir_all(config_path).unwrap();
+                fs::rename(&temp_dir.path(), config_path).unwrap();
+                debug!("rename {:?} {:?}", &temp_dir.path().to_str(), config_path.to_str());
+            }
+        }
+        let version_file = format!("{}/version", &self.config_dir.as_str());
+        if Path::new(&version_file).is_file() {
+            if let Ok(version) = fs::read_to_string(&version_file) {
+                self.version = Some(version);
+            }
+        }
+
+        self.datastores = HarvesterConfig::read_items::<Datastore>(&self.config_dir, "datastore");
+        self.commands = HarvesterConfig::read_items::<Command>(&self.config_dir, "command");
+        self.collector_infos = HarvesterConfig::read_items::<CollectorInfo>(
+            &self.config_dir,
             "collector_info",
         );
 
-        if let Some(tar_dir) = HarvesterConfig::download_config_tar(config_dir, config_tar_url).await {
-            datastores.extend(HarvesterConfig::read_toml::<Datastore>(&tar_dir, "datastore"));
-            commands.extend(HarvesterConfig::read_toml::<Command>(&tar_dir, "command"));
-            collector_infos.extend(HarvesterConfig::read_toml::<CollectorInfo>(&tar_dir, "collector_info"));
-        }
+        debug!("datastores: {:?}", &self.datastores);
+        debug!("commands: {:?}", &self.commands);
+        debug!("collector_infos: {:?}", &self.collector_infos);
+    }
 
-        debug!("datastores: {:?}", datastores);
-        debug!("commands: {:?}", commands);
-        debug!("collector_infos: {:?}", collector_infos);
+    pub async fn new(config_dir: &str, config_tar_url: &str) -> HarvesterConfig {
+        let mut config = HarvesterConfig {
+            commands: HashMap::new(),
+            collector_infos: HashMap::new(),
+            datastores: HashMap::new(),
+            config_dir: String::from(config_dir),
+            config_tar_url: String::from(config_tar_url),
+            version: None,
+        };
+        config.reload_config().await;
 
-        HarvesterConfig {
-            commands,
-            collector_infos,
-            datastores,
-        }
+        return config;
     }
 }
 
 pub struct RefineryConfig {
     datastores: HashMap<String, Datastore>,
     checkers: HashMap<String, CheckerInfo>,
+    cnc: Cnc,
+    config_tar_url: String,
 }
 
-impl CncConfig for RefineryConfig {}
+impl CncConfigHandler for RefineryConfig {}
 
 impl RefineryConfig {
     pub fn get_datastores(&self) -> &HashMap<String, Datastore> {
@@ -218,20 +266,51 @@ impl RefineryConfig {
         &self.checkers
     }
 
-    pub async fn new(config_dir: &str, config_tar_url: &str) -> RefineryConfig {
-        let mut datastores = RefineryConfig::read_toml::<Datastore>(config_dir, "datastore");
-        let mut checkers = RefineryConfig::read_toml::<CheckerInfo>(config_dir, "checker_info");
+    pub fn get_cnc_config(&self) -> &Cnc {
+        &self.cnc
+    }
 
-        if let Some(tar_dir) = RefineryConfig::download_config_tar(config_dir, config_tar_url).await {
-            datastores.extend(RefineryConfig::read_toml::<Datastore>(&tar_dir, "datastore"));
-            checkers.extend(RefineryConfig::read_toml::<CheckerInfo>(&tar_dir, "checker_info"));
-        }
+    pub async fn new(config_dir: &str, config_tar_url: &str) -> RefineryConfig {
+        let mut datastores = RefineryConfig::read_items::<Datastore>(config_dir, "datastore");
+        let mut checkers = RefineryConfig::read_items::<CheckerInfo>(config_dir, "checker_info");
+        let mut cnc = RefineryConfig::read_item::<Cnc>(config_dir, "cnc");
+
         debug!("datastores: {:?}", datastores);
         debug!("checkers: {:?}", checkers);
+        debug!("cnc: {:?}", cnc);
 
         RefineryConfig {
             datastores,
             checkers,
+            cnc,
+            config_tar_url: String::from(config_tar_url),
+        }
+    }
+}
+
+pub struct ConfigUpdaterConfig {
+    cnc: Cnc,
+    config_tar_url: String,
+}
+
+impl CncConfigHandler for ConfigUpdaterConfig {}
+
+impl ConfigUpdaterConfig {
+    pub fn get_cnc_config(&self) -> &Cnc {
+        &self.cnc
+    }
+
+    pub fn set_cnc_config(&mut self, cnc: Cnc) {
+        self.cnc = cnc;
+    }
+
+    pub async fn new(config_dir: &str, config_tar_url: &str) -> ConfigUpdaterConfig {
+        let mut cnc = ConfigUpdaterConfig::read_item::<Cnc>(config_dir, "cnc");
+        debug!("cnc: {:?}", cnc);
+
+        ConfigUpdaterConfig {
+            cnc,
+            config_tar_url: String::from(config_tar_url),
         }
     }
 }

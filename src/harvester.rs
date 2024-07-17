@@ -1,16 +1,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
-
+use axum::{Extension, Router};
+use axum::routing::get;
+use log::debug;
 use rdkafka::ClientConfig;
 use rdkafka::producer::FutureProducer;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio_cron_scheduler::{Job, JobScheduler};
 
 use collector::Collector;
 use sender::{KafkaSender, Sender, StdoutSender};
-
+use uuid::Uuid;
 use crate::common::store_channel::StoreChannel;
 
 use super::common::config::*;
@@ -18,27 +20,38 @@ use super::common::config::*;
 mod sender;
 mod collector;
 
+struct HarvesterContainer {
+    harvester: Arc<RwLock<Harvester>>,
+}
+
+impl HarvesterContainer {
+    pub async fn new(harvester: Arc<RwLock<Harvester>>) -> Arc<RwLock<HarvesterContainer>> {
+        harvester.write().await.start().await;
+        Arc::new(RwLock::new(HarvesterContainer { harvester }))
+    }
+
+    pub async fn reload(&mut self) {
+        self.harvester.write().await.config.write().await.reload_config().await;
+        let new_harvester = Harvester::new(self.harvester.read().await.config.clone()).await;
+        {
+            let mut old_harvester = self.harvester.write().await;
+            old_harvester.stop().await;
+            drop(old_harvester);
+        }
+        new_harvester.write().await.start().await;
+        self.harvester = new_harvester;
+    }
+}
 
 pub struct Harvester {
     config: Arc<RwLock<HarvesterConfig>>,
     handlers: Vec<JoinHandle<()>>,
     channels: HashMap<String, StoreChannel>,
-    sched: JobScheduler,
+    sched: Arc<RwLock<JobScheduler>>,
+    sched_uuids: Vec<Uuid>,
 }
 
 impl Harvester {
-    pub async fn new(config: Arc<RwLock<HarvesterConfig>>) -> Harvester {
-        let sched = JobScheduler::new().await.unwrap();
-
-        let harvester = Harvester {
-            config,
-            handlers: vec![],
-            channels: HashMap::new(),
-            sched,
-        };
-
-        harvester
-    }
 
     async fn create_channels(&mut self) {
         for (store_name, datastore) in self.config.read().await.get_datastores() {
@@ -106,7 +119,7 @@ impl Harvester {
         }
     }
 
-    async fn run_collectors(&self, config: Arc<RwLock<HarvesterConfig>>) {
+    async fn run_collectors(&mut self) {
         // TODO: "ALL" keyword 는 enum 혹은 예약 키워드로.
         // TODO: harvester 가 속한 hostgroup 들이 어디있는지 알아오는 과정이 필요하다. hostgroup.toml 과 ambari 정보로부터 알아온다.
         // TODO: hostgroup.toml 정보와 ambari 정보를 합치는 건 별도의 대몬 프로세스가 진행. hdfs 로부터 저장하고 받아온다.
@@ -120,15 +133,16 @@ impl Harvester {
                     .tx
                     .clone(),
             );
-            let config = config.clone();
+            let config = Arc::clone(&self.config);
             let last_notification_time = Arc::new(RwLock::new(SystemTime::now()));
             let collector_info = Arc::new(collector_info.clone());
-            self.sched
+
+            let uuid = self.sched.write().await
                 .add(
                     Job::new_async(
                         collector_info.crontab.clone().as_str(),
                         move |_, _| {
-                            let harvester_config = Arc::clone(&config.clone());
+                            let harvester_config = Arc::clone(&config);
                             let info = Arc::clone(&collector_info);
                             let last_notification_time = Arc::clone(&last_notification_time);
                             let tx = (*tx).clone();
@@ -146,17 +160,72 @@ impl Harvester {
                 )
                 .await
                 .unwrap();
+            self.sched_uuids.push(uuid);
         }
     }
 
-    pub async fn run(&mut self, config: Arc<RwLock<HarvesterConfig>>) {
-        self.create_channels().await;
-        self.run_senders().await;
-        self.run_collectors(config).await;
-
-        self.sched.start().await.unwrap();
+    async fn stop(&mut self) {
+        self.sched.write().await.shutdown().await.unwrap();
+        for (_, store_channel) in self.channels.drain() {
+            drop(store_channel.tx);
+        }
+        self.channels.clear();
+        for uuid in &self.sched_uuids {
+            self.sched.write().await.remove(uuid).await.unwrap();
+        }
+        debug!("Stopping harvester...");
         while let Some(h) = self.handlers.pop() {
             h.await.unwrap();
         }
+    }
+
+    async fn start(&mut self) {
+        self.create_channels().await;
+        self.run_senders().await;
+        self.run_collectors().await;
+
+
+        self.sched.write().await.start().await.unwrap();
+        debug!("sched run");
+    }
+    
+    async fn reload(Extension(harvester_container): Extension<Arc<RwLock<HarvesterContainer>>>) {
+        debug!("Harvester reloading...");
+        harvester_container.write().await.reload().await;
+    }
+    
+    async fn version(Extension(harvester_container): Extension<Arc<RwLock<HarvesterContainer>>>) -> String {
+        match &harvester_container.read().await.harvester.read().await.config.read().await.version {
+            Some(version) => {
+                String::from(version)
+            },
+            None => {
+                String::from("Unknown")
+            }
+        }
+    } 
+
+    pub async fn run(harvester: Arc<RwLock<Harvester>>) {
+        let harvester_container = HarvesterContainer::new(harvester);
+        let app = Router::new()
+            .route("/reload", get(Self::reload))
+            .route("/version", get(Self::version))
+            .layer(Extension(harvester_container.await));
+
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+        axum::serve(listener, app).await.unwrap();
+    }
+
+    pub async fn new(config: Arc<RwLock<HarvesterConfig>>) -> Arc<RwLock<Harvester>> {
+        let sched = JobScheduler::new().await.unwrap();
+
+        let harvester = Arc::new(RwLock::new(Harvester {
+            config,
+            handlers: vec![],
+            channels: HashMap::new(),
+            sched: Arc::new(RwLock::new(sched)),
+            sched_uuids: vec![],
+        }));
+        harvester
     }
 }
