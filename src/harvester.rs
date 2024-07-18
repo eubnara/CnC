@@ -32,14 +32,14 @@ impl HarvesterContainer {
 
     pub async fn reload(&mut self) {
         self.harvester.write().await.config.write().await.reload_config().await;
-        let new_harvester = Harvester::new(self.harvester.read().await.config.clone()).await;
+        let new = Harvester::new(self.harvester.read().await.config.clone()).await;
         {
-            let mut old_harvester = self.harvester.write().await;
-            old_harvester.stop().await;
-            drop(old_harvester);
+            let mut old = self.harvester.write().await;
+            old.stop().await;
+            drop(old);
         }
-        new_harvester.write().await.start().await;
-        self.harvester = new_harvester;
+        new.write().await.start().await;
+        self.harvester = new;
     }
 }
 
@@ -206,13 +206,14 @@ impl Harvester {
     } 
 
     pub async fn run(harvester: Arc<RwLock<Harvester>>) {
+        let port = harvester.read().await.config.read().await.get_cnc_config().harvester.port.unwrap_or_else(|| HARVESTER_PORT_DEFAULT);
         let harvester_container = HarvesterContainer::new(harvester);
         let app = Router::new()
             .route("/reload", get(Self::reload))
             .route("/version", get(Self::version))
             .layer(Extension(harvester_container.await));
 
-        let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
         axum::serve(listener, app).await.unwrap();
     }
 

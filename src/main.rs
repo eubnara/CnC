@@ -40,8 +40,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let config = Arc::new(
                 RwLock::new(
                     RefineryConfig::new(config_dir, config_tar_url).await));
-            let mut refinery = Refinery::new(config.clone());
-            refinery.run().await;
+            let mut refinery = Refinery::new(config);
+            Refinery::run(refinery).await;
         }
         "config_updater" => {
             let config = ConfigUpdaterConfig::new(config_dir, config_tar_url).await;

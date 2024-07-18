@@ -16,6 +16,10 @@ use tar::Archive;
 use tempfile::{tempdir, TempDir};
 use toml::{Table, Value};
 
+pub const HARVESTER_PORT_DEFAULT: u32 = 10023;
+pub const REFINERY_PORT_DEFAULT: u32 = 10024;
+pub const CONFIG_UPDATER_PORT_DEFAULT: u32 = 10025;
+
 #[derive(Deserialize, Debug)]
 pub struct Command {
     pub command_line: String,
@@ -68,6 +72,16 @@ pub struct CncCommon {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct CncHarvester {
+    pub port: Option<u32>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct CncRefinery {
+    pub port: Option<u32>,
+}
+
+#[derive(Deserialize, Debug)]
 pub struct CncConfigUpdaterAmbari {
     pub url: String,
     pub user: String,
@@ -76,7 +90,7 @@ pub struct CncConfigUpdaterAmbari {
 
 #[derive(Deserialize, Debug)]
 pub struct CncConfigUpdater {
-    pub port: u32,
+    pub port: Option<u32>,
     pub poll_interval_s: u64,
     pub config_git_url: String,
     pub config_upload_curl_cmd: String,
@@ -86,6 +100,8 @@ pub struct CncConfigUpdater {
 #[derive(Deserialize, Debug)]
 pub struct Cnc {
     pub common: CncCommon,
+    pub harvester: CncHarvester,
+    pub refinery: CncRefinery,
     pub config_updater: CncConfigUpdater,
 }
 
@@ -107,8 +123,7 @@ pub trait CncConfigHandler {
             .expect(&format!("Failed to parse {}", config_path))
     }
 
-
-    async fn download_config(config_tar_url: &str) -> Option<TempDir> {
+    async fn download_config(config_dir: &str, config_tar_url: &str) -> Option<String> {
         if config_tar_url.is_empty() {
             return None;
         }
@@ -176,8 +191,20 @@ stderr: {}",
         let mut archive = Archive::new(tar);
         archive.unpack(&tar_dir).unwrap();
 
+        let config_path = Path::new(config_dir);
+        if config_path.is_dir() {
+            fs::remove_dir_all(config_path).unwrap();
+            fs::rename(&tar_dir.path(), config_path).unwrap();
+            debug!("rename {:?} {:?}", &tar_dir.path().to_str(), config_path.to_str());
+        }
 
-        Some(tar_dir)
+        let version_file = format!("{}/version", config_dir);
+        if Path::new(&version_file).is_file() {
+            if let Ok(version) = fs::read_to_string(&version_file) {
+                return Some(version)
+            }
+        }
+        return None
     }
 }
 
@@ -185,6 +212,7 @@ pub struct HarvesterConfig {
     commands: HashMap<String, Command>,
     pub collector_infos: HashMap<String, CollectorInfo>,
     datastores: HashMap<String, Datastore>,
+    cnc: Option<Cnc>,
     config_dir: String,
     config_tar_url: String,
     pub version: Option<String>,
@@ -204,25 +232,19 @@ impl HarvesterConfig {
     pub fn get_datastores(&self) -> &HashMap<String, Datastore> {
         &self.datastores
     }
+    
+    pub fn get_cnc_config(&self) -> &Cnc {
+        self.cnc.as_ref().unwrap()
+    }
 
     pub async fn reload_config(&mut self) {
-        if let Some(temp_dir) = Self::download_config(&self.config_tar_url).await {
-            let config_path = Path::new(&self.config_dir);
-            if config_path.is_dir() {
-                fs::remove_dir_all(config_path).unwrap();
-                fs::rename(&temp_dir.path(), config_path).unwrap();
-                debug!("rename {:?} {:?}", &temp_dir.path().to_str(), config_path.to_str());
-            }
-        }
-        let version_file = format!("{}/version", &self.config_dir.as_str());
-        if Path::new(&version_file).is_file() {
-            if let Ok(version) = fs::read_to_string(&version_file) {
-                self.version = Some(version);
-            }
+        if let Some(version) = Self::download_config(&self.config_dir, &self.config_tar_url).await {
+            self.version = Some(version);
         }
 
         self.datastores = HarvesterConfig::read_items::<Datastore>(&self.config_dir, "datastore");
         self.commands = HarvesterConfig::read_items::<Command>(&self.config_dir, "command");
+        self.cnc = Some(HarvesterConfig::read_item::<Cnc>(&self.config_dir, "cnc"));
         self.collector_infos = HarvesterConfig::read_items::<CollectorInfo>(
             &self.config_dir,
             "collector_info",
@@ -238,21 +260,24 @@ impl HarvesterConfig {
             commands: HashMap::new(),
             collector_infos: HashMap::new(),
             datastores: HashMap::new(),
+            cnc: None,
             config_dir: String::from(config_dir),
             config_tar_url: String::from(config_tar_url),
             version: None,
         };
         config.reload_config().await;
 
-        return config;
+        config
     }
 }
 
 pub struct RefineryConfig {
     datastores: HashMap<String, Datastore>,
     checkers: HashMap<String, CheckerInfo>,
-    cnc: Cnc,
+    cnc: Option<Cnc>,
+    config_dir: String,
     config_tar_url: String,
+    pub version: Option<String>,
 }
 
 impl CncConfigHandler for RefineryConfig {}
@@ -267,24 +292,35 @@ impl RefineryConfig {
     }
 
     pub fn get_cnc_config(&self) -> &Cnc {
-        &self.cnc
+        self.cnc.as_ref().unwrap()
+    }
+    
+    pub async fn reload_config(&mut self) {
+        if let Some(version) = Self::download_config(&self.config_dir, &self.config_tar_url).await {
+            self.version = Some(version);
+        }
+
+        self.datastores = RefineryConfig::read_items::<Datastore>(&self.config_dir, "datastore");
+        self.checkers = RefineryConfig::read_items::<CheckerInfo>(&self.config_dir, "checker_info");
+        self.cnc = Some(RefineryConfig::read_item::<Cnc>(&self.config_dir, "cnc"));
+
+        debug!("datastores: {:?}", &self.datastores);
+        debug!("checkers: {:?}", &self.checkers);
+        debug!("cnc: {:?}", &self.cnc);
     }
 
     pub async fn new(config_dir: &str, config_tar_url: &str) -> RefineryConfig {
-        let mut datastores = RefineryConfig::read_items::<Datastore>(config_dir, "datastore");
-        let mut checkers = RefineryConfig::read_items::<CheckerInfo>(config_dir, "checker_info");
-        let mut cnc = RefineryConfig::read_item::<Cnc>(config_dir, "cnc");
-
-        debug!("datastores: {:?}", datastores);
-        debug!("checkers: {:?}", checkers);
-        debug!("cnc: {:?}", cnc);
-
-        RefineryConfig {
-            datastores,
-            checkers,
-            cnc,
+        let mut config = RefineryConfig {
+            datastores: HashMap::new(),
+            checkers: HashMap::new(),
+            cnc: None,
+            config_dir: String::from(config_dir),
             config_tar_url: String::from(config_tar_url),
-        }
+            version: None,
+        };
+        config.reload_config().await;
+        
+        config
     }
 }
 

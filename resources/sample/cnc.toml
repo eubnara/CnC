@@ -9,12 +9,17 @@ polling_interval_s = 15
 url = "localhost:9092"
 topic = "infos"
 
+[harvester]
+#port = 10023
+
+[refinery]
+#port = 10024
 
 [config_updater]
-port = 10023
+#port = 10025
 poll_interval_s = 15
-#config_git_url = ""
-#config_upload_curl_cmd = ""
+config_git_url = ""
+config_upload_curl_cmd = ""
 
 [config_updater.ambari]
 url = "localhost:8080"
