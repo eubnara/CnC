@@ -108,22 +108,19 @@ impl Refinery {
             let source_datastore = config.get_datastores().get(source)
                 .expect("Unexpected source");
             let source_kind = source_datastore.kind.as_str();
-            let param = source_datastore.param.as_ref();
             let receiver = match source_kind {
                 "kafka" => {
-                    let param = match param {
-                        Some(param) => param,
-                        None => panic!("Empty param for kafka source: {}", source)
-                    };
+                    let kafka = source_datastore.kafka.as_ref()
+                        .expect(&format!("Empty param for kafka source: {}", source));
                     let group_instance_id = format!("refinery-{}", gethostname::gethostname().into_string().unwrap());
                     let consumer: StreamConsumer = ClientConfig::new()
                         .set("group.id", "refinery")
                         .set("group.instance.id", group_instance_id)
-                        .set("bootstrap.servers", param.get("bootstrap.servers").unwrap().as_str().unwrap())
+                        .set("bootstrap.servers", &kafka.bootstrap_servers)
                         .set("auto.offset.reset", "latest")
                         .create()
                         .expect("Kafka consumer creation failed");
-                    let topic = String::from(param.get("topic").unwrap().as_str().unwrap());
+                    let topic = String::from(&kafka.bootstrap_servers);
                     KafkaReceiver {
                         sender_channel: tx,
                         consumer,

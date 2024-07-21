@@ -1,0 +1,43 @@
+[common]
+cluster_name = "cnc"
+
+[common.hosts_kafka]
+bootstrap_servers = "localhost:9092"
+topic = "hosts"
+
+# TODO: datastore.toml 에서의 alert_infos_to_kafka 와 같은 토픽이다. 어떻게 정리할지? 중복해서 그냥 사용?
+[common.infos_kafka]
+bootstrap_servers = "localhost:9092"
+topic = "alert-infos"
+
+[harvester]
+#port = 10023
+
+[refinery]
+#port = 10024
+
+[config_updater]
+#port = 10025
+poll_interval_s = 15
+config_git_url = "https://github.com/eubnara/CNC.git"
+config_git_subdir = "configs/"
+
+[config_updater.ambari]
+url = "http://localhost:8080"
+user = "admin"
+# TODO: read pw from password_file, default "admin"
+#password_file = "ambari_password"
+
+[config_updater.uploader]
+kind = "http"
+url = ""
+
+#[config_updater.uploader.param]
+#method = PUT
+
+#[config_updater.uploader]
+#kind = "webhdfs"
+#url = ""
+
+#[config_updater.uploader.param]
+#secure = true

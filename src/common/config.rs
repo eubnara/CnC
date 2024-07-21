@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::fs;
 use std::fs::File;
@@ -7,31 +7,95 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use flate2::read::GzDecoder;
-use log::debug;
+use log::{debug, error};
+use rdkafka::message::ToBytes;
 use reqwest::StatusCode;
+use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
 use subprocess::{ExitStatus, Popen, PopenConfig, Redirection};
 use tar::Archive;
-use tempfile::{tempdir, TempDir};
+use tempfile::tempdir;
 use toml::{Table, Value};
 
 pub const HARVESTER_PORT_DEFAULT: u32 = 10023;
 pub const REFINERY_PORT_DEFAULT: u32 = 10024;
 pub const CONFIG_UPDATER_PORT_DEFAULT: u32 = 10025;
 
-#[derive(Deserialize, Debug)]
-pub struct Command {
-    pub command_line: String,
+#[derive(Deserialize, Serialize, Debug)]
+pub struct CheckerInfo {
+    pub kind: String,
+    pub source: String,
+    pub param: Option<Value>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug)]
+pub struct KafkaInfo {
+    pub bootstrap_servers: String,
+    pub topic: String,
+    #[serde(default = "KafkaInfo::message_timeout_ms")]
+    pub message_timeout_ms: String,
+}
+
+impl KafkaInfo {
+    pub fn message_timeout_ms() -> String {"5000".to_string()}
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct CncCommon {
+    pub cluster_name: String,
+    pub hosts_kafka: KafkaInfo,
+    pub infos_kafka: KafkaInfo,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct CncHarvester {
+    pub port: Option<u32>,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct CncRefinery {
+    pub port: Option<u32>,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct CncConfigUpdaterAmbari {
+    pub url: String,
+    pub user: Option<String>,
+    pub password_file: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct CncConfigUpdaterUploader {
+    pub kind: String,
+    pub url: String,
+    pub param: Option<Table>,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct CncConfigUpdater {
+    pub port: Option<u32>,
+    pub poll_interval_s: u64,
+    pub config_git_url: String,
+    pub config_git_subdir: Option<String>,
+    pub ambari: Option<CncConfigUpdaterAmbari>,
+    pub uploader: CncConfigUpdaterUploader,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct Cnc {
+    pub common: CncCommon,
+    pub harvester: CncHarvester,
+    pub refinery: CncRefinery,
+    pub config_updater: CncConfigUpdater,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct CollectorInfoParam {
     pub name: String,
     pub param: Option<Table>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct CollectorInfo {
     pub host_group_name: String,
     pub description: String,
@@ -45,82 +109,139 @@ pub struct CollectorInfo {
     pub last_notification_time: Option<SystemTime>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
+pub struct Command {
+    pub command_line: String,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
 pub struct Datastore {
     pub kind: String,
-    pub param: Option<Value>,
+    pub kafka: Option<KafkaInfo>,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct CheckerInfo {
-    pub kind: String,
-    pub source: String,
-    pub param: Option<Value>,
+#[derive(Deserialize, Serialize, Debug)]
+pub struct HostGroup {
+    pub members: HashSet<String>,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct KafkaInfo {
-    pub url: String,
-    pub topic: String,
-    pub polling_interval_s: Option<u32>,
+pub struct AllConfig {
+    pub checkers: HashMap<String, CheckerInfo>,
+    pub collector_infos: HashMap<String, CollectorInfo>,
+    pub datastores: HashMap<String, Datastore>,
+    pub commands: HashMap<String, Command>,
+    pub host_groups: HashMap<String, HostGroup>,
+    pub cnc: Option<Cnc>,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct CncCommon {
-    pub hosts_kafka: KafkaInfo,
-    pub infos_kafka: KafkaInfo,
-}
+impl CncConfigHandler for AllConfig {}
 
-#[derive(Deserialize, Debug)]
-pub struct CncHarvester {
-    pub port: Option<u32>,
-}
+impl AllConfig {
+    pub fn read_all(config_dir: &str, git_dir: &str, cluster_name: &str) -> AllConfig {
+        let mut checkers = HashMap::new();
+        let mut collector_infos = HashMap::new();
+        let mut datastores = HashMap::new();
+        let mut commands = HashMap::new();
+        let mut host_groups = HashMap::new();
+        let mut cnc: Option<Cnc> = None;
 
-#[derive(Deserialize, Debug)]
-pub struct CncRefinery {
-    pub port: Option<u32>,
-}
+        for dir in vec![config_dir, git_dir, &format!("{}/{}", git_dir, cluster_name)] {
+            checkers.extend(AllConfig::read_items::<CheckerInfo>(
+                dir, "checker_info").unwrap_or_default());
+            collector_infos.extend(AllConfig::read_items::<CollectorInfo>(
+                dir, "collector_info").unwrap_or_default());
+            datastores.extend(AllConfig::read_items::<Datastore>(
+                dir, "datastore").unwrap_or_default());
+            commands.extend(AllConfig::read_items::<Command>(
+                dir, "command").unwrap_or_default());
+            host_groups.extend(AllConfig::read_items::<HostGroup>(
+                dir, "host_group").unwrap_or_default());
+            if let Some(_cnc) = ConfigUpdaterConfig::read_item::<Cnc>(config_dir, "cnc") {
+                cnc = Some(_cnc);
+            }
+        }
 
-#[derive(Deserialize, Debug)]
-pub struct CncConfigUpdaterAmbari {
-    pub url: String,
-    pub user: String,
-    pub password_file: String,
-}
+        AllConfig {
+            checkers,
+            collector_infos,
+            datastores,
+            commands,
+            host_groups,
+            cnc,
+        }
+    }
+    pub fn dump_all(all_config: AllConfig, config_dir: &str) {
+        File::create(format!("{config_dir}/checker_info.toml"))
+            .unwrap()
+            .write(
+                toml::to_string_pretty(&all_config.checkers).unwrap().to_bytes()
+            )
+            .unwrap();
 
-#[derive(Deserialize, Debug)]
-pub struct CncConfigUpdater {
-    pub port: Option<u32>,
-    pub poll_interval_s: u64,
-    pub config_git_url: String,
-    pub config_upload_curl_cmd: String,
-    pub ambari: Option<CncConfigUpdaterAmbari>,
-}
+        File::create(format!("{config_dir}/collector_info.toml"))
+            .unwrap()
+            .write(
+                toml::to_string_pretty(&all_config.collector_infos).unwrap().to_bytes()
+            )
+            .unwrap();
 
-#[derive(Deserialize, Debug)]
-pub struct Cnc {
-    pub common: CncCommon,
-    pub harvester: CncHarvester,
-    pub refinery: CncRefinery,
-    pub config_updater: CncConfigUpdater,
-}
+        File::create(format!("{config_dir}/datastore.toml"))
+            .unwrap()
+            .write(
+                toml::to_string_pretty(&all_config.datastores).unwrap().to_bytes()
+            )
+            .unwrap();
 
+        File::create(format!("{config_dir}/command.toml"))
+            .unwrap()
+            .write(
+                toml::to_string_pretty(&all_config.commands).unwrap().to_bytes()
+            )
+            .unwrap();
+
+        File::create(format!("{config_dir}/host_group.toml"))
+            .unwrap()
+            .write(
+                toml::to_string_pretty(&all_config.host_groups).unwrap().to_bytes()
+            )
+            .unwrap();
+
+        if let Some(cnc) = &all_config.cnc {
+            File::create(format!("{config_dir}/cnc.toml"))
+                .unwrap()
+                .write(
+                    toml::to_string_pretty(cnc).unwrap().to_bytes()
+                )
+                .unwrap();
+        }
+    }
+}
 
 pub trait CncConfigHandler {
-    fn read_items<T: DeserializeOwned>(config_dir: &str, config_name: &str) -> HashMap<String, T> {
+    fn read_items<T: DeserializeOwned>(config_dir: &str, config_name: &str) -> Option<HashMap<String, T>> {
         let config_path = &format!("{}/{}.toml", config_dir, config_name);
-        let contents =
-            fs::read_to_string(config_path).expect(&format!("{} not found", config_path));
-        toml::from_str::<HashMap<String, T>>(&contents)
-            .expect(&format!("Failed to parse {}", config_path))
+        let contents = match fs::read_to_string(config_path) {
+            Ok(contents) => contents,
+            Err(err) => {
+                error!("{}", err);
+                return None;
+            }
+        };
+        Some(toml::from_str::<HashMap<String, T>>(&contents)
+            .expect(&format!("Failed to parse {}", config_path)))
     }
 
-    fn read_item<T: DeserializeOwned>(config_dir: &str, config_name: &str) -> T {
+    fn read_item<T: DeserializeOwned>(config_dir: &str, config_name: &str) -> Option<T> {
         let config_path = &format!("{}/{}.toml", config_dir, config_name);
-        let contents =
-            fs::read_to_string(config_path).expect(&format!("{} not found", config_path));
-        toml::from_str::<T>(&contents)
-            .expect(&format!("Failed to parse {}", config_path))
+        let contents = match fs::read_to_string(config_path) {
+            Ok(contents) => contents,
+            Err(err) => {
+                error!("{}", err);
+                return None;
+            }
+        };
+        Some(toml::from_str::<T>(&contents)
+            .expect(&format!("Failed to parse {}", config_path)))
     }
 
     async fn download_config(config_dir: &str, config_tar_url: &str) -> Option<String> {
@@ -201,13 +322,14 @@ stderr: {}",
         let version_file = format!("{}/version", config_dir);
         if Path::new(&version_file).is_file() {
             if let Ok(version) = fs::read_to_string(&version_file) {
-                return Some(version)
+                return Some(version);
             }
         }
-        return None
+        return None;
     }
 }
 
+#[derive(Default)]
 pub struct HarvesterConfig {
     commands: HashMap<String, Command>,
     pub collector_infos: HashMap<String, CollectorInfo>,
@@ -232,7 +354,7 @@ impl HarvesterConfig {
     pub fn get_datastores(&self) -> &HashMap<String, Datastore> {
         &self.datastores
     }
-    
+
     pub fn get_cnc_config(&self) -> &Cnc {
         self.cnc.as_ref().unwrap()
     }
@@ -260,10 +382,9 @@ impl HarvesterConfig {
             commands: HashMap::new(),
             collector_infos: HashMap::new(),
             datastores: HashMap::new(),
-            cnc: None,
             config_dir: String::from(config_dir),
             config_tar_url: String::from(config_tar_url),
-            version: None,
+            ..Default::default()
         };
         config.reload_config().await;
 
@@ -271,6 +392,7 @@ impl HarvesterConfig {
     }
 }
 
+#[derive(Default)]
 pub struct RefineryConfig {
     datastores: HashMap<String, Datastore>,
     checkers: HashMap<String, CheckerInfo>,
@@ -294,7 +416,7 @@ impl RefineryConfig {
     pub fn get_cnc_config(&self) -> &Cnc {
         self.cnc.as_ref().unwrap()
     }
-    
+
     pub async fn reload_config(&mut self) {
         if let Some(version) = Self::download_config(&self.config_dir, &self.config_tar_url).await {
             self.version = Some(version);
@@ -313,13 +435,12 @@ impl RefineryConfig {
         let mut config = RefineryConfig {
             datastores: HashMap::new(),
             checkers: HashMap::new(),
-            cnc: None,
             config_dir: String::from(config_dir),
             config_tar_url: String::from(config_tar_url),
-            version: None,
+            ..Default::default()
         };
         config.reload_config().await;
-        
+
         config
     }
 }

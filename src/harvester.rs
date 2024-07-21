@@ -78,7 +78,6 @@ impl Harvester {
                     store_name
                 ));
             let config = self.config.read().await;
-            let param = config.get_datastores().get(&store_name.clone()).unwrap().param.as_ref();
             match kind {
                 // TODO: stdout, kafka 를 enum 형태로?, 설정파일에 들어갈 수 있는 값을 쉽게 찾을 수 있게끔?
                 "stdout" => {
@@ -91,16 +90,15 @@ impl Harvester {
                     self.handlers.push(handler);
                 }
                 "kafka" => {
-                    let param = match param {
-                        Some(param) => param,
-                        None => panic!("Empty param for kafka sender: {}", store_name)
-                    };
-                    let bootstrap_servers = String::from(param.get("bootstrap.servers").unwrap().as_str().unwrap());
-                    let topic = String::from(param.get("topic").unwrap().as_str().unwrap());
+                    let kafka = config.get_datastores().get(&store_name.clone()).unwrap().kafka.as_ref()
+                        .expect(&format!("Empty param for kafka sender: {}", store_name));
+                    let bootstrap_servers = String::from(&kafka.bootstrap_servers);
+                    let topic = String::from(&kafka.topic);
+                    let message_timeout_ms = String::from(&kafka.message_timeout_ms);
                     let handler = tokio::spawn(async move {
                         let producer: FutureProducer = ClientConfig::new()
                             .set("bootstrap.servers", bootstrap_servers)
-                            .set("message.timeout.ms", "5000")
+                            .set("message.timeout.ms", message_timeout_ms)
                             .create()
                             .expect("Producer creation error");
                         let mut sender = KafkaSender {
@@ -121,8 +119,8 @@ impl Harvester {
 
     async fn run_collectors(&mut self) {
         // TODO: "ALL" keyword 는 enum 혹은 예약 키워드로.
-        // TODO: harvester 가 속한 hostgroup 들이 어디있는지 알아오는 과정이 필요하다. hostgroup.toml 과 ambari 정보로부터 알아온다.
-        // TODO: hostgroup.toml 정보와 ambari 정보를 합치는 건 별도의 대몬 프로세스가 진행. hdfs 로부터 저장하고 받아온다.
+        // TODO: harvester 가 속한 host_group 들이 어디있는지 알아오는 과정이 필요하다. host_group.toml 과 ambari 정보로부터 알아온다.
+        // TODO: host_group.toml 정보와 ambari 정보를 합치는 건 별도의 대몬 프로세스가 진행. hdfs 로부터 저장하고 받아온다.
         for (collector_name, collector_info) in
             self.config.read().await.get_collector_infos()
         {
