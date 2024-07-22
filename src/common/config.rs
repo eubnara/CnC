@@ -125,6 +125,7 @@ pub struct HostGroup {
     pub members: HashSet<String>,
 }
 
+#[derive(Default)]
 pub struct AllConfig {
     pub checkers: HashMap<String, CheckerInfo>,
     pub collector_infos: HashMap<String, CollectorInfo>,
@@ -137,29 +138,25 @@ pub struct AllConfig {
 impl CncConfigHandler for AllConfig {}
 
 impl AllConfig {
-    pub fn read_all(config_dir: &str, git_dir: &str, cluster_name: &str) -> AllConfig {
+    pub fn read_dir(dir: &str) -> AllConfig {
         let mut checkers = HashMap::new();
         let mut collector_infos = HashMap::new();
         let mut datastores = HashMap::new();
         let mut commands = HashMap::new();
         let mut host_groups = HashMap::new();
-        let mut cnc: Option<Cnc> = None;
+        let cnc: Option<Cnc>;
 
-        for dir in vec![config_dir, git_dir, &format!("{}/{}", git_dir, cluster_name)] {
-            checkers.extend(AllConfig::read_items::<CheckerInfo>(
-                dir, "checker_info").unwrap_or_default());
-            collector_infos.extend(AllConfig::read_items::<CollectorInfo>(
-                dir, "collector_info").unwrap_or_default());
-            datastores.extend(AllConfig::read_items::<Datastore>(
-                dir, "datastore").unwrap_or_default());
-            commands.extend(AllConfig::read_items::<Command>(
-                dir, "command").unwrap_or_default());
-            host_groups.extend(AllConfig::read_items::<HostGroup>(
-                dir, "host_group").unwrap_or_default());
-            if let Some(_cnc) = ConfigUpdaterConfig::read_item::<Cnc>(config_dir, "cnc") {
-                cnc = Some(_cnc);
-            }
-        }
+        checkers.extend(AllConfig::read_items::<CheckerInfo>(
+            dir, "checker_info").unwrap_or_default());
+        collector_infos.extend(AllConfig::read_items::<CollectorInfo>(
+            dir, "collector_info").unwrap_or_default());
+        datastores.extend(AllConfig::read_items::<Datastore>(
+            dir, "datastore").unwrap_or_default());
+        commands.extend(AllConfig::read_items::<Command>(
+            dir, "command").unwrap_or_default());
+        host_groups.extend(AllConfig::read_items::<HostGroup>(
+            dir, "host_group").unwrap_or_default());
+        cnc = ConfigUpdaterConfig::read_item::<Cnc>(dir, "cnc");
 
         AllConfig {
             checkers,
@@ -170,7 +167,28 @@ impl AllConfig {
             cnc,
         }
     }
-    pub fn dump_all(all_config: AllConfig, config_dir: &str) {
+    
+    fn merge(&mut self, other: AllConfig) {
+        self.checkers.extend(other.checkers);
+        self.collector_infos.extend(other.collector_infos);
+        self.datastores.extend(other.datastores);
+        self.commands.extend(other.commands);
+        self.host_groups.extend(other.host_groups);
+        self.cnc = other.cnc;
+    }
+    
+    pub fn read_all(config_dir: &str, git_dir: &str, cluster_name: &str) -> AllConfig {
+        let mut all_config = AllConfig {
+            ..Default::default()
+        };
+
+        for dir in vec![config_dir, git_dir, &format!("{}/{}", git_dir, cluster_name)] {
+            all_config.merge(AllConfig::read_dir(dir));
+        }
+
+        all_config
+    }
+    pub fn dump_all(all_config: &AllConfig, config_dir: &str) {
         File::create(format!("{config_dir}/checker_info.toml"))
             .unwrap()
             .write(
