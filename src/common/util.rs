@@ -7,7 +7,7 @@ pub struct CommandHelper {
 }
 
 impl CommandHelper {
-    pub fn run(&self) -> Result<String, String> { 
+    pub fn run(&self) -> Result<String, String> {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(&self.cmd);
         if let Some(current_dir) = &self.current_dir {

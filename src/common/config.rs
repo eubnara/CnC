@@ -76,6 +76,7 @@ pub struct CncConfigUpdater {
     pub port: Option<u32>,
     pub poll_interval_s: u64,
     pub config_git_url: String,
+    pub config_git_branch: Option<String>,
     pub config_git_subdir: Option<String>,
     pub ambari: Option<CncConfigUpdaterAmbari>,
     pub uploader: CncConfigUpdaterUploader,
@@ -125,7 +126,7 @@ pub struct HostGroup {
     pub members: HashSet<String>,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct AllConfig {
     pub checkers: HashMap<String, CheckerInfo>,
     pub collector_infos: HashMap<String, CollectorInfo>,
@@ -241,7 +242,7 @@ pub trait CncConfigHandler {
         let contents = match fs::read_to_string(config_path) {
             Ok(contents) => contents,
             Err(err) => {
-                error!("{}", err);
+                debug!("error in read_items: {}", err);
                 return None;
             }
         };
@@ -254,7 +255,7 @@ pub trait CncConfigHandler {
         let contents = match fs::read_to_string(config_path) {
             Ok(contents) => contents,
             Err(err) => {
-                error!("{}", err);
+                debug!("error in read_item: {}", err);
                 return None;
             }
         };
@@ -382,13 +383,13 @@ impl HarvesterConfig {
             self.version = Some(version);
         }
 
-        self.datastores = HarvesterConfig::read_items::<Datastore>(&self.config_dir, "datastore");
-        self.commands = HarvesterConfig::read_items::<Command>(&self.config_dir, "command");
-        self.cnc = Some(HarvesterConfig::read_item::<Cnc>(&self.config_dir, "cnc"));
+        self.datastores = HarvesterConfig::read_items::<Datastore>(&self.config_dir, "datastore").unwrap();
+        self.commands = HarvesterConfig::read_items::<Command>(&self.config_dir, "command").unwrap();
+        self.cnc = Some(HarvesterConfig::read_item::<Cnc>(&self.config_dir, "cnc").unwrap());
         self.collector_infos = HarvesterConfig::read_items::<CollectorInfo>(
             &self.config_dir,
             "collector_info",
-        );
+        ).unwrap();
 
         debug!("datastores: {:?}", &self.datastores);
         debug!("commands: {:?}", &self.commands);
@@ -440,9 +441,9 @@ impl RefineryConfig {
             self.version = Some(version);
         }
 
-        self.datastores = RefineryConfig::read_items::<Datastore>(&self.config_dir, "datastore");
-        self.checkers = RefineryConfig::read_items::<CheckerInfo>(&self.config_dir, "checker_info");
-        self.cnc = Some(RefineryConfig::read_item::<Cnc>(&self.config_dir, "cnc"));
+        self.datastores = RefineryConfig::read_items::<Datastore>(&self.config_dir, "datastore").unwrap();
+        self.checkers = RefineryConfig::read_items::<CheckerInfo>(&self.config_dir, "checker_info").unwrap();
+        self.cnc = Some(RefineryConfig::read_item::<Cnc>(&self.config_dir, "cnc").unwrap());
 
         debug!("datastores: {:?}", &self.datastores);
         debug!("checkers: {:?}", &self.checkers);
@@ -480,7 +481,7 @@ impl ConfigUpdaterConfig {
     }
 
     pub async fn new(config_dir: &str, config_tar_url: &str) -> ConfigUpdaterConfig {
-        let mut cnc = ConfigUpdaterConfig::read_item::<Cnc>(config_dir, "cnc");
+        let mut cnc = ConfigUpdaterConfig::read_item::<Cnc>(config_dir, "cnc").unwrap();
         debug!("cnc: {:?}", cnc);
 
         ConfigUpdaterConfig {

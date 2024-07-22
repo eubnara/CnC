@@ -21,12 +21,17 @@ docker exec -it test_cnc_kafka /opt/kafka/bin/kafka-console-consumer.sh --topic 
 
 ```
 # run harvester
-cargo run -- harvester --config-dir ./configs
+RUST_LOG=debug cargo run -- harvester --config-dir ./configs
 ```
 
 ```
 # run refinery
-cargo run -- refinery --config-dir ./configs
+RUST_LOG=debug cargo run -- refinery --config-dir ./configs
+```
+
+```
+# run config_updater
+RUST_LOG=debug cargo run -- config_updater --config-dir ./configs
 ```
 
 

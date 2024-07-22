@@ -51,13 +51,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         config,
                         config_dir: String::from(config_dir),
                         config_tar_url: String::from(config_tar_url),
-                    }).run(),
+                    }).run().await,
                 None =>
                     (SimpleConfigUpdater {
                         config,
                         config_dir: String::from(config_dir),
                         config_tar_url: String::from(config_tar_url),
-                    }).run(),
+                    }).run().await,
             };
         }
         _ => {

@@ -18,22 +18,22 @@ topic = "alert-infos"
 
 [config_updater]
 #port = 10025
-poll_interval_s = 15
+poll_interval_s = 3
 config_git_url = "https://github.com/eubnara/CNC.git"
+config_git_branch = "prototype"
 config_git_subdir = "configs/"
 
-[config_updater.ambari]
-url = "http://localhost:8080"
-user = "admin"
-# TODO: read pw from password_file, default "admin"
-#password_file = "ambari_password"
+#[config_updater.ambari]
+#url = "http://localhost:8080"
+##user = "admin" 
+#password_file = "ambari_password.txt"
 
 [config_updater.uploader]
 kind = "http"
-url = ""
+url = "http://localhost:8000/cnc_config.tar.gz"
 
-#[config_updater.uploader.param]
-#method = PUT
+[config_updater.uploader.param]
+method = "POST"
 
 #[config_updater.uploader]
 #kind = "webhdfs"

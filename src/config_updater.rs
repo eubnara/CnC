@@ -75,20 +75,26 @@ impl ConfigUploader for WebhdfsConfigUploader {
 }
 
 trait ConfigUpdater {
-    fn pull_configs_from_git(git_root: &str, config_git_url: &str) -> bool {
+    fn pull_configs_from_git(git_root: &str, config_git_url: &str, config_git_branch: &Option<String>) -> bool {
         let git_parent_dir = Path::new(git_root).parent().unwrap().to_str().unwrap().to_string();
+        let git_dir_name = Path::new(git_root).file_name().unwrap().to_str().unwrap().to_string();
 
+        let mut prev_commit = String::new();
         if !Path::new(&git_root).is_dir() {
+            let mut cmd = String::from("git clone");
+            if let Some(config_git_branch) = config_git_branch {
+                cmd = format!("{} --branch {}", cmd, config_git_branch);
+            };
             CommandHelper {
                 current_dir: Some(git_parent_dir),
-                cmd: format!("git clone {} {}", config_git_url, git_root),
+                cmd: format!("{} {} {}", cmd, config_git_url, git_dir_name),
+            }.run().unwrap();
+        } else {
+            prev_commit = CommandHelper {
+                current_dir: Some(String::from(git_root)),
+                cmd: String::from("git rev-parse HEAD"),
             }.run().unwrap();
         }
-
-        let prev_commit = CommandHelper {
-            current_dir: Some(String::from(git_root)),
-            cmd: String::from("git rev-parse HEAD"),
-        }.run().unwrap();
 
         CommandHelper {
             current_dir: Some(String::from(git_root)),
@@ -126,6 +132,7 @@ trait ConfigUpdater {
     }
 
     fn upload_configs(local_tar_path: &str, uploader_config: &CncConfigUpdaterUploader) -> Result<String, String> {
+        debug!("local_tar_path: {}", local_tar_path);
         let kind = &uploader_config.kind;
         let url = String::from(&uploader_config.url);
         let param = uploader_config.param.as_ref().unwrap();
@@ -211,6 +218,8 @@ impl ConfigUpdater for SimpleConfigUpdater {}
 impl SimpleConfigUpdater {
     pub async fn run(&mut self) {
         let config_git_url = &self.config.get_cnc_config().config_updater.config_git_url;
+        let config_git_branch = &self.config.get_cnc_config().config_updater.config_git_branch;
+        
         let git_root = Path::new(&self.config_dir).join("_configs_from_git").to_str().unwrap().to_string();
 
         let mut git_path = String::from(&git_root);
@@ -220,12 +229,14 @@ impl SimpleConfigUpdater {
         let cluster_name = &self.config.get_cnc_config().common.cluster_name;
         loop {
             sleep(Duration::from_secs(self.config.get_cnc_config().config_updater.poll_interval_s)).await;
+            debug!("Check latest configs");
 
-            if !Self::pull_configs_from_git(&git_root, config_git_url) {
+            if !Self::pull_configs_from_git(&git_root, config_git_url, config_git_branch) {
                 continue;
             }
 
             let all_configs = AllConfig::read_all(&self.config_dir, &git_path, cluster_name);
+            debug!("all_configs: {:?}", &all_configs);
             let tar_file = Self::combine_configs_as_tar(&all_configs);
             Self::upload_configs(tar_file.path().to_str().unwrap(), &self.config.get_cnc_config().config_updater.uploader).unwrap();
         }
@@ -373,6 +384,7 @@ impl AmbariConfigUpdater {
 
     pub async fn run(&mut self) {
         let config_git_url = &self.config.get_cnc_config().config_updater.config_git_url;
+        let config_git_branch = &self.config.get_cnc_config().config_updater.config_git_branch;
         let git_root = Path::new(&self.config_dir).join("_configs_from_git").to_str().unwrap().to_string();
 
         let mut git_path = String::from(&git_root);
@@ -388,7 +400,8 @@ impl AmbariConfigUpdater {
 
         loop {
             sleep(Duration::from_secs(self.config.get_cnc_config().config_updater.poll_interval_s)).await;
-            let git_changed = Self::pull_configs_from_git(&git_root, config_git_url);
+            debug!("Check latest configs");
+            let git_changed = Self::pull_configs_from_git(&git_root, config_git_url, config_git_branch);
             let (host_group_map, host_maintenance_map) = self.get_info_from_ambari();
 
             self.update_host_maintenance_state_on_kafka(&host_maintenance_map).await;
@@ -409,7 +422,7 @@ impl AmbariConfigUpdater {
                     changed_host.insert(host.to_string());
                 }
             }
-
+            debug!("cur_configs: {:?}", &cur_configs);
             let tar_file = Self::combine_configs_as_tar(&cur_configs);
             Self::upload_configs(tar_file.path().to_str().unwrap(), &self.config.get_cnc_config().config_updater.uploader).unwrap();
             remove_dir_all(&prev_conf_dir).expect("Failed to delete prev_conf_dir");

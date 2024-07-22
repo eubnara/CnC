@@ -22,3 +22,5 @@ Cargo.lock
 
 **/_downloaded_config_tar
 **/*.tar.gz
+version
+_configs_from_git/
