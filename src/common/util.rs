@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, Output};
 
 #[derive(Default)]
 pub struct CommandHelper {
@@ -7,7 +7,7 @@ pub struct CommandHelper {
 }
 
 impl CommandHelper {
-    pub fn run(&self) -> Result<String, String> {
+    pub fn run_and_get_stdout(&self) -> Result<String, String> {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(&self.cmd);
         if let Some(current_dir) = &self.current_dir {
@@ -21,5 +21,14 @@ impl CommandHelper {
             String::from_utf8(output.stderr).unwrap_or_default()))
         }
         Ok(String::from_utf8(output.stdout).unwrap())
+    }
+
+    pub fn run(&self) -> Output {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(&self.cmd);
+        if let Some(current_dir) = &self.current_dir {
+            cmd.current_dir(current_dir);
+        }
+        cmd.output().unwrap()
     }
 }

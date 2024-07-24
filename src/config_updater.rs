@@ -1,12 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::{read_to_string, remove_dir_all};
+use std::io::{Read, Write};
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use chrono::Local;
 use futures::future::join_all;
-use log::{debug, error};
+use log::{debug, error, info};
 use rdkafka::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use serde_json::json;
@@ -29,7 +31,7 @@ struct HttpConfigUploader {
 impl ConfigUploader for HttpConfigUploader {
     fn upload(&self, local_tar_path: &str) -> Result<String, String> {
         let cmd = format!(
-            "curl -kL -X {} -T {} {}",
+            "curl -kL -X '{}' -T '{}' '{}'",
             self.method,
             local_tar_path,
             self.url,
@@ -38,7 +40,7 @@ impl ConfigUploader for HttpConfigUploader {
         CommandHelper {
             cmd,
             ..Default::default()
-        }.run()
+        }.run_and_get_stdout()
     }
 }
 
@@ -49,28 +51,47 @@ struct WebhdfsConfigUploader {
 
 impl ConfigUploader for WebhdfsConfigUploader {
     fn upload(&self, local_tar_path: &str) -> Result<String, String> {
-        let mut cmd = format!("set -o pipefail; curl -vk -X PUT -T '{}' ", local_tar_path);
+        let mut cmd = format!("curl -vk --fail -X PUT -T '{}' ", local_tar_path);
         if self.secure {
             cmd += " -u : --negotiate ";
         }
-        cmd += &self.url;
-        cmd += " | sed -nE 's/Location: (.*)/\\1/p' | head -n1";
+        cmd = format!("{} '{}'", cmd, &self.url);
 
-        let location = CommandHelper {
+        debug!("upload cmd phase1: {}", &cmd);
+        let curl_phase1 = CommandHelper {
             cmd,
             ..Default::default()
-        }.run().unwrap();
+        }.run();
 
-        let mut cmd = format!("curl -vk -X PUT -T '{}' ", local_tar_path);
+        if !curl_phase1.status.success() {
+            let stdout = String::from_utf8(curl_phase1.stdout).unwrap_or_default();
+            let stderr = String::from_utf8(curl_phase1.stderr).unwrap_or_default();
+            return Err(format!(r#"stdout: {}
+            stderr: {}"#, stdout, stderr));
+        }
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("set -o pipefail; sed -nE 's/.*Location: (.*)/\\1/p' | head -n1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.unwrap().write_all(&curl_phase1.stderr).unwrap();
+
+        let mut location = String::new();
+        child.stdout.unwrap().read_to_string(&mut location).unwrap();
+
+        let mut cmd = format!("curl -vk --fail -X PUT -T '{}' ", local_tar_path);
         if self.secure {
             cmd += " -u : --negotiate ";
         };
-        cmd += &location;
-
+        cmd = format!("{} '{}'", cmd, &location.trim());
+        debug!("upload cmd phase2: {}", &cmd);
         CommandHelper {
             cmd,
             ..Default::default()
-        }.run()
+        }.run_and_get_stdout()
     }
 }
 
@@ -88,23 +109,23 @@ trait ConfigUpdater {
             CommandHelper {
                 current_dir: Some(git_parent_dir),
                 cmd: format!("{} {} {}", cmd, config_git_url, git_dir_name),
-            }.run().unwrap();
+            }.run_and_get_stdout().unwrap();
         } else {
             prev_commit = CommandHelper {
                 current_dir: Some(String::from(git_root)),
                 cmd: String::from("git rev-parse HEAD"),
-            }.run().unwrap();
+            }.run_and_get_stdout().unwrap();
         }
 
         CommandHelper {
             current_dir: Some(String::from(git_root)),
             cmd: String::from("git pull"),
-        }.run().unwrap();
+        }.run_and_get_stdout().unwrap();
 
         let cur_commit = CommandHelper {
             current_dir: Some(String::from(git_root)),
             cmd: String::from("git rev-parse HEAD"),
-        }.run().unwrap();
+        }.run_and_get_stdout().unwrap();
 
         prev_commit != cur_commit
     }
@@ -126,7 +147,7 @@ trait ConfigUpdater {
         CommandHelper {
             current_dir: Some(config_temp_dir_path.to_string()),
             cmd,
-        }.run().unwrap();
+        }.run_and_get_stdout().unwrap();
 
         tar_temp_file
     }
@@ -157,13 +178,13 @@ trait ConfigUpdater {
                     return Ok(msg);
                 }
                 Err(err) => {
-                    error!("{err}");
                     last_fail_msg = err;
                 }
             }
             std::thread::sleep(Duration::from_secs(3));
         }
-        Err(last_fail_msg)
+        error!("{last_fail_msg}");
+        Err(String::from("Failed to upload configs"))
     }
 
     async fn reload_daemons(changed_host: &HashSet<String>, host_group_map: &HashMap<String, HostGroup>, cnc_config: &Cnc) {
@@ -219,7 +240,7 @@ impl SimpleConfigUpdater {
     pub async fn run(&mut self) {
         let config_git_url = &self.config.get_cnc_config().config_updater.config_git_url;
         let config_git_branch = &self.config.get_cnc_config().config_updater.config_git_branch;
-        
+
         let git_root = Path::new(&self.config_dir).join("_configs_from_git").to_str().unwrap().to_string();
 
         let mut git_path = String::from(&git_root);

@@ -37,7 +37,7 @@ method = "POST"
 
 #[config_updater.uploader]
 #kind = "webhdfs"
-#url = ""
+#url = "https://ambari-agent-1.example.com:9871/webhdfs/v1/user/ambari-qa/cnc_config_latest.tar.gz?op=CREATE&overwrite=true"
 
 #[config_updater.uploader.param]
 #secure = true
