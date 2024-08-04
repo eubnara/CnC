@@ -118,9 +118,6 @@ impl Harvester {
     }
 
     async fn run_collectors(&mut self) {
-        // TODO: "ALL" keyword 는 enum 혹은 예약 키워드로.
-        // TODO: harvester 가 속한 host_group 들이 어디있는지 알아오는 과정이 필요하다. host_group.toml 과 ambari 정보로부터 알아온다.
-        // TODO: host_group.toml 정보와 ambari 정보를 합치는 건 별도의 대몬 프로세스가 진행. hdfs 로부터 저장하고 받아온다.
         for (collector_name, collector_info) in
             self.config.read().await.get_collector_infos()
         {

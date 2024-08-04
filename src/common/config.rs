@@ -385,10 +385,29 @@ impl HarvesterConfig {
         self.datastores = HarvesterConfig::read_items::<Datastore>(&self.config_dir, "datastore").unwrap();
         self.commands = HarvesterConfig::read_items::<Command>(&self.config_dir, "command").unwrap();
         self.cnc = Some(HarvesterConfig::read_item::<Cnc>(&self.config_dir, "cnc").unwrap());
-        self.collector_infos = HarvesterConfig::read_items::<CollectorInfo>(
+
+        let host_groups = HarvesterConfig::read_items::<HostGroup>(&self.config_dir, "host_group").unwrap();
+        let mut my_groups: HashSet<String> = HashSet::new();
+        let hostname = gethostname::gethostname().into_string().unwrap();
+        for (name, host_group)in host_groups {
+            if host_group.members.contains(&hostname) {
+                my_groups.insert(name);
+            }
+        }
+
+        self.collector_infos = HashMap::new();
+
+        let all_collector_infos = HarvesterConfig::read_items::<CollectorInfo>(
             &self.config_dir,
             "collector_info",
         ).unwrap();
+
+        for (name, collector_info) in all_collector_infos {
+            let host_group_name = &collector_info.host_group_name;
+            if host_group_name == "all" || my_groups.contains(host_group_name) {
+                self.collector_infos.insert(name, collector_info);
+            }
+        }
 
         debug!("datastores: {:?}", &self.datastores);
         debug!("commands: {:?}", &self.commands);
