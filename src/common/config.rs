@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use flate2::read::GzDecoder;
-use log::{debug, error};
+use log::debug;
 use rdkafka::message::ToBytes;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -44,7 +44,6 @@ impl KafkaInfo {
 pub struct CncCommon {
     pub cluster_name: String,
     pub hosts_kafka: KafkaInfo,
-    pub infos_kafka: KafkaInfo,
 }
 
 #[derive(Deserialize, Serialize, Debug)]

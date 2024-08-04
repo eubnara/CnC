@@ -1,9 +1,10 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use log::{debug, error};
 use reqwest::{Error, Response};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use crate::common::config::CheckerInfo;
 
-// TODO: harvester/sender.rs 와 비교해서 trait 에 기본구현을 두는 것이 좋을지 없애는 것이 좋을지 검토하고 통일된 형태로 가자.
 pub trait Checker {
     async fn check(&mut self);
 }

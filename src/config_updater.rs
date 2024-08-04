@@ -8,16 +8,20 @@ use std::time::Duration;
 
 use chrono::Local;
 use futures::future::join_all;
-use log::{debug, error, info};
-use rdkafka::ClientConfig;
+use log::{debug, error, info, warn};
+use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
+use rdkafka::consumer::{BaseConsumer, Consumer, StreamConsumer};
+use rdkafka::message::Headers;
 use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::util::Timeout;
 use serde_json::json;
 use tempfile::{NamedTempFile, tempdir};
 use tokio::time::sleep;
 
-use crate::ambari::model::{HostComponents, Hosts};
+use crate::model::ambari::{HostComponents, Hosts};
 use crate::common::config::{AllConfig, Cnc, CncConfigUpdaterUploader, ConfigUpdaterConfig, Datastore, HARVESTER_PORT_DEFAULT, HarvesterConfig, HostGroup, REFINERY_PORT_DEFAULT, RefineryConfig};
 use crate::common::util::CommandHelper;
+use crate::model::kafka::HostsKafka;
 
 trait ConfigUploader {
     fn upload(&self, local_tar_path: &str) -> Result<String, String>;
@@ -273,7 +277,52 @@ pub struct AmbariConfigUpdater {
 impl ConfigUpdater for AmbariConfigUpdater {}
 
 impl AmbariConfigUpdater {
-    fn get_info_from_ambari(&self) -> (HashMap<String, HostGroup>, HashMap<String, bool>) {
+
+    fn get_host_maintenance_map_from_kafka(&self) -> HashMap<String, bool> {
+        let cnc_config = self.config.get_cnc_config();
+        let hosts_kafka = &cnc_config.common.hosts_kafka;
+        let mut host_maintenance_map = HashMap::new();
+
+        let topic = &hosts_kafka.topic;
+        let topics = [topic.as_str()];
+
+        let consumer: BaseConsumer = ClientConfig::new()
+            .set("group.id", "config_updater")
+            .set("bootstrap.servers", &hosts_kafka.bootstrap_servers)
+            .set("enable.auto.commit", "false")
+            .set("auto.offset.reset", "earliest")
+            .set("message.timeout.ms", &hosts_kafka.message_timeout_ms)
+            .create()
+            .unwrap();
+
+        consumer
+            .subscribe(&topics)
+            .unwrap();
+
+        let metadata = consumer.fetch_metadata(Some(topic), Duration::from_secs(10)).unwrap();
+        for partition in metadata.topics().iter().flat_map(|t| t.partitions()) {
+            let mut tpl = TopicPartitionList::new();
+            tpl.add_partition_offset(topic, partition.id(), Offset::Beginning).unwrap();
+            consumer.assign(&tpl).unwrap();
+            consumer.seek_partitions(tpl, Duration::from_secs(10)).unwrap();
+        }
+        while let Some(message) = consumer.poll(Timeout::After(Duration::from_secs(1))) {
+            match message {
+                Err(e) => error!("error: {}", e),
+                Ok(m) => {
+                    if let Some(Ok(s)) = m.payload_view::<str>() {
+                        let data: HostsKafka = serde_json::from_str(s).unwrap();
+                        host_maintenance_map.insert(String::from_utf8(Vec::from(m.key().unwrap())).unwrap(), data.in_maintenance);
+                    }
+                }
+            }
+        }
+
+
+        host_maintenance_map
+    }
+
+    async fn get_info_from_ambari(&self) -> (HashMap<String, HostGroup>, HashMap<String, bool>) {
         let cnc_config = self.config.get_cnc_config();
         let cluster_name = &cnc_config.common.cluster_name;
         let ambari = cnc_config.config_updater.ambari.as_ref().unwrap();
@@ -290,7 +339,7 @@ impl AmbariConfigUpdater {
         let mut host_group_map: HashMap<String, HostGroup> = HashMap::new();
         let mut host_maintenance_map: HashMap<String, bool> = HashMap::new();
 
-        let host_components_json = reqwest::blocking::Client::new().get(
+        let host_components_json = reqwest::Client::new().get(
             format!(
                 "{}/api/v1/clusters/{}/host_components",
                 url,
@@ -299,7 +348,11 @@ impl AmbariConfigUpdater {
         )
             .basic_auth(&user, Some(&password))
             .send()
-            .unwrap().json::<HostComponents>().unwrap();
+            .await
+            .unwrap()
+            .json::<HostComponents>()
+            .await
+            .unwrap();
 
         for host_component in host_components_json.items {
             let roles = &host_component.host_roles;
@@ -319,7 +372,7 @@ impl AmbariConfigUpdater {
             }
         }
 
-        let host_maintenance_json = reqwest::blocking::Client::new().get(
+        let host_maintenance_json = reqwest::Client::new().get(
             format!(
                 "{}/api/v1/clusters/{}/hosts?fields=Hosts/maintenance_state",
                 url,
@@ -328,7 +381,11 @@ impl AmbariConfigUpdater {
         )
             .basic_auth(&user, Some(&password))
             .send()
-            .unwrap().json::<Hosts>().unwrap();
+            .await
+            .unwrap()
+            .json::<Hosts>()
+            .await
+            .unwrap();
 
         for host in host_maintenance_json.items {
             let host_info = host.host_info;
@@ -343,23 +400,32 @@ impl AmbariConfigUpdater {
     async fn update_host_maintenance_state_on_kafka(&self, host_maintenance_map: &HashMap<String, bool>) {
         let cnc_config = self.config.get_cnc_config();
         let hosts_kafka = &cnc_config.common.hosts_kafka;
+
+        let prev_host_maintenance_map = self.get_host_maintenance_map_from_kafka();
+
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", &hosts_kafka.bootstrap_servers)
             .set("message.timeout.ms", &hosts_kafka.message_timeout_ms)
             .create()
             .expect("Producer creation error");
         for (host, in_maintenance) in host_maintenance_map.into_iter() {
-            let data = json!({
-               "in_maintenance": in_maintenance, 
-            });
+            if let Some(prev_maintenance_state) = prev_host_maintenance_map.get(host) {
+                if prev_maintenance_state == in_maintenance {
+                    continue;
+                }
+            }
+            let data = HostsKafka {
+                in_maintenance: in_maintenance.clone(),
+            };
+            let json_data = serde_json::to_string(&data).unwrap();
             let delivery_status = &producer.send(
                 FutureRecord::to(&hosts_kafka.topic)
-                    .payload(&data.to_string())
+                    .payload(&json_data)
                     .key(host),
                 Duration::from_secs(0),
             )
                 .await;
-            debug!("Delivery status for message {} received: {:?}", &data.to_string(), delivery_status);
+            debug!("Delivery status for message {} received: {:?}", &json_data.to_string(), delivery_status);
         }
     }
 
@@ -418,13 +484,11 @@ impl AmbariConfigUpdater {
         if !prev_conf_dir.exists() {
             fs::create_dir(&prev_conf_dir).expect("Failed to create prev_conf_dir");
         }
-
         loop {
             sleep(Duration::from_secs(self.config.get_cnc_config().config_updater.poll_interval_s)).await;
-            debug!("Check latest configs");
+            debug!("Check latest configs on AmbariConfigUpdater");
             let git_changed = Self::pull_configs_from_git(&git_root, config_git_url, config_git_branch);
-            let (host_group_map, host_maintenance_map) = self.get_info_from_ambari();
-
+            let (host_group_map, host_maintenance_map) = self.get_info_from_ambari().await;
             self.update_host_maintenance_state_on_kafka(&host_maintenance_map).await;
 
             let mut cur_configs = AllConfig::read_all(&self.config_dir, &git_path, cluster_name);

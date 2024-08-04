@@ -5,11 +5,6 @@ cluster_name = "cnc"
 bootstrap_servers = "localhost:9092"
 topic = "hosts"
 
-# TODO: datastore.toml 에서의 alert_infos_to_kafka 와 같은 토픽이다. 어떻게 정리할지? 중복해서 그냥 사용?
-[common.infos_kafka]
-bootstrap_servers = "localhost:9092"
-topic = "alert-infos"
-
 [harvester]
 #port = 10023
 
@@ -23,8 +18,8 @@ config_git_url = "https://github.com/eubnara/CNC.git"
 config_git_branch = "prototype"
 config_git_subdir = "configs/"
 
-#[config_updater.ambari]
-#url = "http://localhost:8080"
+[config_updater.ambari]
+url = "http://127.0.0.1:8080"
 ##user = "admin" 
 #password_file = "ambari_password.txt"
 

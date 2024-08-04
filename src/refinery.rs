@@ -1,16 +1,19 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use axum::{Extension, Router};
 use axum::routing::get;
-use log::debug;
-use rdkafka::ClientConfig;
-use rdkafka::consumer::StreamConsumer;
+use log::{debug, error, info, warn};
+use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
+use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::message::Headers;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::common::config::{CheckerInfo, REFINERY_PORT_DEFAULT, RefineryConfig};
 use crate::common::store_channel::StoreChannel;
 use crate::harvester::Harvester;
+use crate::model::kafka::HostsKafka;
 use crate::refinery::checker::{Checker, HttpAlertChecker, StdoutAlertChecker};
 use crate::refinery::receiver::{KafkaReceiver, Receiver};
 
@@ -44,6 +47,7 @@ pub struct Refinery {
     config: Arc<RwLock<RefineryConfig>>,
     handlers: Vec<JoinHandle<()>>,
     channels: HashMap<String, StoreChannel>,
+    host_maintenance_map: Arc<RwLock<HashMap<String, bool>>>,
 }
 
 impl Refinery {
@@ -108,6 +112,7 @@ impl Refinery {
             let source_datastore = config.get_datastores().get(source)
                 .expect("Unexpected source");
             let source_kind = source_datastore.kind.as_str();
+            let host_maintenance_map = Arc::clone(&self.host_maintenance_map);
             let receiver = match source_kind {
                 "kafka" => {
                     let kafka = source_datastore.kafka.as_ref()
@@ -125,6 +130,7 @@ impl Refinery {
                         sender_channel: tx,
                         consumer,
                         topic,
+                        host_maintenance_map,
                     }
                 }
                 _ => panic!("Unsupported source datastore kind: {}", source_kind),
@@ -134,6 +140,53 @@ impl Refinery {
             });
             self.handlers.push(handler);
         }
+    }
+
+    async fn subscribe_hosts_kafka_topic(&mut self) {
+        let config = self.config.read().await;
+        let cnc_config = config.get_cnc_config();
+        let hosts_kafka = &cnc_config.common.hosts_kafka;
+        let brokers = hosts_kafka.bootstrap_servers.clone();
+        let topic = hosts_kafka.topic.clone();
+        let mut host_maintenance_map = Arc::clone(&self.host_maintenance_map);
+
+        let handler = tokio::spawn(async move {
+            let brokers = brokers;
+            let topic = topic;
+            let topics = [topic.as_str()];
+            let mut host_maintenance_map = host_maintenance_map;
+            let consumer: StreamConsumer = ClientConfig::new()
+                .set("group.id", "refinery")
+                .set("bootstrap.servers", &brokers)
+                .set("enable.auto.commit", "false")
+                .set("auto.offset.reset", "earliest")
+                .create()
+                .unwrap();
+            consumer
+                .subscribe(&topics)
+                .unwrap();
+
+            let metadata = consumer.fetch_metadata(Some(topic.as_str()), Duration::from_secs(10)).unwrap();
+            for partition in metadata.topics().iter().flat_map(|t| t.partitions()) {
+                let mut tpl = TopicPartitionList::new();
+                tpl.add_partition_offset(topic.as_str(), partition.id(), Offset::Beginning).unwrap();
+                consumer.assign(&tpl).unwrap();
+                consumer.seek_partitions(tpl, Duration::from_secs(10)).unwrap();
+            }
+            loop {
+                match consumer.recv().await {
+                    Err(e) => error!("error: {}", e),
+                    Ok(m) => {
+                        if let Some(Ok(s)) = m.payload_view::<str>() {
+                            let host = String::from_utf8(Vec::from(m.key().unwrap())).unwrap();
+                            let data: HostsKafka = serde_json::from_str(s).unwrap();
+                            host_maintenance_map.write().await.insert(host, data.in_maintenance);
+                        }
+                    }
+                }
+            }
+        });
+        self.handlers.push(handler);
     }
     
     async fn stop(&mut self) {
@@ -148,6 +201,7 @@ impl Refinery {
     }
 
     async fn start(&mut self) {
+        self.subscribe_hosts_kafka_topic().await;
         self.create_channels().await;
         self.run_checkers().await;
         self.run_receivers().await;
@@ -186,6 +240,7 @@ impl Refinery {
             config,
             handlers: vec![],
             channels: HashMap::new(),
+            host_maintenance_map: Arc::new(RwLock::new(HashMap::new())),
         }))
     }
 }
