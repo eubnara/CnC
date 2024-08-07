@@ -1,21 +1,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use leon::Template;
-use log::{debug, error};
-use serde_json::json;
+use log::error;
 use subprocess::{ExitStatus, Popen, PopenConfig, Redirection};
 use tokio::sync::{mpsc, RwLock};
-use tokio::time::sleep;
 
 use crate::common::config::{CollectorInfo, HarvesterConfig};
+use crate::model::cnc::CommandResult;
 
 pub struct Collector {
     pub sender_channel: mpsc::Sender<String>,
+    pub collector_info_key: String,
     pub collector_info: Arc<CollectorInfo>,
     pub harvester_config: Arc<RwLock<HarvesterConfig>>,
-    pub last_notification_time: Arc<RwLock<SystemTime>>,
 }
 
 impl Collector {
@@ -56,66 +55,53 @@ impl Collector {
         }
 
         let cmd = cmd.render(&values).unwrap();
+        // "sh -c" is used to support environment variables.
+        let mut p = Popen::create(
+            &vec!["sh", "-c", &cmd],
+            PopenConfig {
+                stdout: Redirection::Pipe,
+                stderr: Redirection::Pipe,
+                ..Default::default()
+            },
+        )
+            .unwrap();
 
-        let max_retries = self.collector_info.max_retries;
-        let retry_interval_s = self.collector_info.retry_interval_s as u64;
-        let notification_interval_s = self.collector_info.notification_interval_s as u64;
-        let mut result = json!({});
-        for _ in 0..max_retries {
-            // "sh -c" is used to support environment variables.
-            let mut p = Popen::create(
-                &vec!["sh", "-c", &cmd],
-                PopenConfig {
-                    stdout: Redirection::Pipe,
-                    stderr: Redirection::Pipe,
-                    ..Default::default()
-                },
-            )
-                .unwrap();
-
-            let (stdout, stderr) = p.communicate(None).unwrap();
-            // TODO: timeout configurable?
-            let return_code: i64 = match p.wait_timeout(Duration::new(10, 0)) {
-                Ok(Some(exit_status)) => {
-                    match exit_status {
-                        ExitStatus::Exited(n) => n as i64,
-                        ExitStatus::Signaled(n) => n as i64,
-                        ExitStatus::Other(n) => n as i64,
-                        ExitStatus::Undetermined => -1,
-                    }
+        let (stdout, stderr) = p.communicate(None).unwrap();
+        // TODO: timeout configurable?
+        let return_code: i64 = match p.wait_timeout(Duration::new(10, 0)) {
+            Ok(Some(exit_status)) => {
+                match exit_status {
+                    ExitStatus::Exited(n) => n as i64,
+                    ExitStatus::Signaled(n) => n as i64,
+                    ExitStatus::Other(n) => n as i64,
+                    ExitStatus::Undetermined => -1,
                 }
-                // TODO: more detail?
-                Ok(None) => -1,
-                Err(err) => {
-                    log::error!("{err}");
-                    -1
-                }
-            };
-            if return_code == 0 {
-                return;
             }
-
-            result = json!({
-                "return_code": return_code,
-                "stdout": stdout.unwrap_or(String::from("")),
-                "stderr": stderr.unwrap_or(String::from("")),
-            });
-            sleep(Duration::from_secs(retry_interval_s)).await;
-        }
-        let elapsed = match self.last_notification_time.read().await.elapsed() {
-            Ok(elapsed) => elapsed,
-            Err(e) => {
-                error!("Error when checking notification time: {e}");
-                return;
+            // TODO: more detail?
+            Ok(None) => 1,
+            Err(err) => {
+                log::error!("{err}");
+                1
             }
         };
 
-        if elapsed.as_secs() > notification_interval_s {
-            self.last_notification_time.write().await.clone_from(&SystemTime::now());
-            if let Err(send_error) = self.sender_channel.send(result.to_string()).await {
-                error!("Failed to send command result: {}", result);
-                error!("{}", send_error);
-            };
-        }
+        let hostname = (&self.harvester_config.read().await.hostname).clone();
+        let host_group_name = (&self.collector_info.host_group_name).clone();
+        let description = (&self.collector_info.description).clone();
+
+        let result = serde_json::to_string(&CommandResult {
+            collector_info_key: self.collector_info_key.clone(),
+            hostname,
+            host_group_name,
+            description,
+            return_code,
+            stdout: stdout.unwrap_or(String::from("")),
+            stderr: stderr.unwrap_or(String::from("")),
+        }).unwrap();
+
+        if let Err(send_error) = self.sender_channel.send(result.to_string()).await {
+            error!("Failed to send command result: {}", result);
+            error!("{}", send_error);
+        };
     }
 }

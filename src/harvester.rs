@@ -1,18 +1,19 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::SystemTime;
+
 use axum::{Extension, Router};
 use axum::routing::get;
 use log::debug;
 use rdkafka::ClientConfig;
 use rdkafka::producer::FutureProducer;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tokio_cron_scheduler::{Job, JobScheduler};
+use uuid::Uuid;
 
 use collector::Collector;
 use sender::{KafkaSender, Sender, StdoutSender};
-use uuid::Uuid;
+
 use crate::common::store_channel::StoreChannel;
 
 use super::common::config::*;
@@ -46,13 +47,12 @@ impl HarvesterContainer {
 pub struct Harvester {
     config: Arc<RwLock<HarvesterConfig>>,
     handlers: Vec<JoinHandle<()>>,
-    channels: HashMap<String, StoreChannel>,
+    channels: HashMap<String, StoreChannel<String>>,
     sched: Arc<RwLock<JobScheduler>>,
     sched_uuids: Vec<Uuid>,
 }
 
 impl Harvester {
-
     async fn create_channels(&mut self) {
         for (store_name, datastore) in self.config.read().await.get_datastores() {
             // TODO: make buffer size configurable?
@@ -118,7 +118,7 @@ impl Harvester {
     }
 
     async fn run_collectors(&mut self) {
-        for (collector_name, collector_info) in
+        for (collector_info_key, collector_info) in
             self.config.read().await.get_collector_infos()
         {
             let tx = Arc::new(
@@ -129,8 +129,8 @@ impl Harvester {
                     .clone(),
             );
             let config = Arc::clone(&self.config);
-            let last_notification_time = Arc::new(RwLock::new(SystemTime::now()));
             let collector_info = Arc::new(collector_info.clone());
+            let collector_info_key = collector_info_key.clone();
 
             let uuid = self.sched.write().await
                 .add(
@@ -139,14 +139,14 @@ impl Harvester {
                         move |_, _| {
                             let harvester_config = Arc::clone(&config);
                             let info = Arc::clone(&collector_info);
-                            let last_notification_time = Arc::clone(&last_notification_time);
                             let tx = (*tx).clone();
+                            let collector_info_key = collector_info_key.clone();
                             Box::pin(async move {
                                 let mut collector = Collector {
+                                    collector_info_key,
                                     sender_channel: tx,
                                     collector_info: info,
                                     harvester_config,
-                                    last_notification_time,
                                 };
                                 collector.run().await;
                             })
@@ -183,22 +183,22 @@ impl Harvester {
         self.sched.write().await.start().await.unwrap();
         debug!("sched run");
     }
-    
+
     async fn reload(Extension(harvester_container): Extension<Arc<RwLock<HarvesterContainer>>>) {
         debug!("Harvester reloading...");
         harvester_container.write().await.reload().await;
     }
-    
+
     async fn version(Extension(harvester_container): Extension<Arc<RwLock<HarvesterContainer>>>) -> String {
         match &harvester_container.read().await.harvester.read().await.config.read().await.version {
             Some(version) => {
                 String::from(version)
-            },
+            }
             None => {
                 String::from("Unknown")
             }
         }
-    } 
+    }
 
     pub async fn run(harvester: Arc<RwLock<Harvester>>) {
         let port = harvester.read().await.config.read().await.get_cnc_config().harvester.port.unwrap_or_else(|| HARVESTER_PORT_DEFAULT);

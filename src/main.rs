@@ -1,8 +1,9 @@
 use std::error::Error;
+use std::io::Write;
 use std::sync::Arc;
 
 use clap::Parser;
-use log::{debug, error};
+use log::error;
 use tokio::sync::RwLock;
 
 use CNC::common::config::{ConfigUpdaterConfig, HarvesterConfig};
@@ -21,10 +22,26 @@ struct Args {
     config_tar_url: String,
 }
 
+// TODO: better logger? https://docs.rs/log/latest/log/
+fn init_logger() {
+    env_logger::builder()
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "{} {}:{} [{}] - {}",
+                chrono::Local::now().format("%Y-%m-%dT%H:%M:%S"),
+                record.file().unwrap_or("unknown"),
+                record.line().unwrap_or(0),
+                record.level(),
+                record.args()
+            )
+        })
+        .init();
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // TODO: better logger? https://docs.rs/log/latest/log/
-    env_logger::init();
+    init_logger();
     let args = Args::parse();
     let config_dir = args.config_dir.as_str();
     let config_tar_url = args.config_tar_url.as_str();

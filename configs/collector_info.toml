@@ -72,7 +72,7 @@ store_name = "alert_infos_to_kafka"
 crontab = "1/1 * * * * * *"
 retry_interval_s = 1
 max_retries = 1
-notification_interval_s = 0
+notification_interval_s = 5
 critical = true
 [return_error_code.command]
 name = "return_error_code_1"

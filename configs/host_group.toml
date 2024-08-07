@@ -1,2 +1,2 @@
 [example_group_1]
-members = ["machine1.example.com", "machine2.example.com"]
+members = ["machine1.example.com", "machine2.example.com", "eub-21ckcto1ww"]

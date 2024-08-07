@@ -1,6 +1,6 @@
 use tokio::sync::mpsc;
 
-pub struct StoreChannel {
-    pub tx: mpsc::Sender<String>,
-    pub rx: Option<mpsc::Receiver<String>>,
+pub struct StoreChannel<T> {
+    pub tx: mpsc::Sender<T>,
+    pub rx: Option<mpsc::Receiver<T>>,
 }

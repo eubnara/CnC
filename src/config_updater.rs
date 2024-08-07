@@ -8,19 +8,17 @@ use std::time::Duration;
 
 use chrono::Local;
 use futures::future::join_all;
-use log::{debug, error, info, warn};
+use log::{debug, error};
 use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
-use rdkafka::consumer::{BaseConsumer, Consumer, StreamConsumer};
-use rdkafka::message::Headers;
+use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
-use serde_json::json;
 use tempfile::{NamedTempFile, tempdir};
 use tokio::time::sleep;
 
-use crate::model::ambari::{HostComponents, Hosts};
-use crate::common::config::{AllConfig, Cnc, CncConfigUpdaterUploader, ConfigUpdaterConfig, Datastore, HARVESTER_PORT_DEFAULT, HarvesterConfig, HostGroup, REFINERY_PORT_DEFAULT, RefineryConfig};
+use crate::common::config::{AllConfig, Cnc, CncConfigUpdaterUploader, ConfigUpdaterConfig, HARVESTER_PORT_DEFAULT, HostGroup, REFINERY_PORT_DEFAULT};
 use crate::common::util::CommandHelper;
+use crate::model::ambari::{HostComponents, Hosts};
 use crate::model::kafka::HostsKafka;
 
 trait ConfigUploader {
@@ -408,6 +406,30 @@ impl AmbariConfigUpdater {
             .set("message.timeout.ms", &hosts_kafka.message_timeout_ms)
             .create()
             .expect("Producer creation error");
+
+        // removed hosts
+        for (host, in_maintenance) in &prev_host_maintenance_map {
+            if let Some(_) = host_maintenance_map.get(host) {
+                continue;
+            }
+            if *in_maintenance == true {
+                continue;
+            }
+            let data = HostsKafka {
+                in_maintenance: true,
+            };
+            let json_data = serde_json::to_string(&data).unwrap();
+            let delivery_status = &producer.send(
+                FutureRecord::to(&hosts_kafka.topic)
+                    .payload(&json_data)
+                    .key(host),
+                Duration::from_secs(0),
+            )
+                .await;
+            debug!("Delivery status for message {} received: {:?}", &json_data.to_string(), delivery_status);
+        }
+
+        // changed hosts
         for (host, in_maintenance) in host_maintenance_map.into_iter() {
             if let Some(prev_maintenance_state) = prev_host_maintenance_map.get(host) {
                 if prev_maintenance_state == in_maintenance {

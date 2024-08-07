@@ -4,7 +4,7 @@ use std::fs;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use flate2::read::GzDecoder;
 use log::debug;
@@ -15,18 +15,11 @@ use serde::de::DeserializeOwned;
 use subprocess::{ExitStatus, Popen, PopenConfig, Redirection};
 use tar::Archive;
 use tempfile::tempdir;
-use toml::{Table, Value};
+use toml::Table;
 
 pub const HARVESTER_PORT_DEFAULT: u32 = 10023;
 pub const REFINERY_PORT_DEFAULT: u32 = 10024;
 pub const CONFIG_UPDATER_PORT_DEFAULT: u32 = 10025;
-
-#[derive(Deserialize, Serialize, Debug)]
-pub struct CheckerInfo {
-    pub kind: String,
-    pub source: String,
-    pub param: Option<Value>,
-}
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct KafkaInfo {
@@ -44,6 +37,7 @@ impl KafkaInfo {
 pub struct CncCommon {
     pub cluster_name: String,
     pub hosts_kafka: KafkaInfo,
+    pub infos_kafka: KafkaInfo,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -52,8 +46,15 @@ pub struct CncHarvester {
 }
 
 #[derive(Deserialize, Serialize, Debug)]
+pub struct CncRefineryAlerter {
+    pub kind: String,
+    pub param: Option<Table>,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
 pub struct CncRefinery {
     pub port: Option<u32>,
+    pub alerter: CncRefineryAlerter,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -106,7 +107,6 @@ pub struct CollectorInfo {
     pub max_retries: u32,
     pub notification_interval_s: u32,
     pub critical: bool,
-    pub last_notification_time: Option<SystemTime>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -127,7 +127,6 @@ pub struct HostGroup {
 
 #[derive(Default, Debug)]
 pub struct AllConfig {
-    pub checkers: HashMap<String, CheckerInfo>,
     pub collector_infos: HashMap<String, CollectorInfo>,
     pub datastores: HashMap<String, Datastore>,
     pub commands: HashMap<String, Command>,
@@ -139,15 +138,12 @@ impl CncConfigHandler for AllConfig {}
 
 impl AllConfig {
     pub fn read_dir(dir: &str) -> AllConfig {
-        let mut checkers = HashMap::new();
         let mut collector_infos = HashMap::new();
         let mut datastores = HashMap::new();
         let mut commands = HashMap::new();
         let mut host_groups = HashMap::new();
         let cnc: Option<Cnc>;
 
-        checkers.extend(AllConfig::read_items::<CheckerInfo>(
-            dir, "checker_info").unwrap_or_default());
         collector_infos.extend(AllConfig::read_items::<CollectorInfo>(
             dir, "collector_info").unwrap_or_default());
         datastores.extend(AllConfig::read_items::<Datastore>(
@@ -159,7 +155,6 @@ impl AllConfig {
         cnc = ConfigUpdaterConfig::read_item::<Cnc>(dir, "cnc");
 
         AllConfig {
-            checkers,
             collector_infos,
             datastores,
             commands,
@@ -169,7 +164,6 @@ impl AllConfig {
     }
     
     fn merge(&mut self, other: AllConfig) {
-        self.checkers.extend(other.checkers);
         self.collector_infos.extend(other.collector_infos);
         self.datastores.extend(other.datastores);
         self.commands.extend(other.commands);
@@ -189,12 +183,6 @@ impl AllConfig {
         all_config
     }
     pub fn dump_all(all_config: &AllConfig, config_dir: &str) {
-        File::create(format!("{config_dir}/checker_info.toml"))
-            .unwrap()
-            .write(
-                toml::to_string_pretty(&all_config.checkers).unwrap().to_bytes()
-            )
-            .unwrap();
 
         File::create(format!("{config_dir}/collector_info.toml"))
             .unwrap()
@@ -356,6 +344,7 @@ pub struct HarvesterConfig {
     config_dir: String,
     config_tar_url: String,
     pub version: Option<String>,
+    pub hostname: String,
 }
 
 impl CncConfigHandler for HarvesterConfig {}
@@ -421,6 +410,7 @@ impl HarvesterConfig {
             datastores: HashMap::new(),
             config_dir: String::from(config_dir),
             config_tar_url: String::from(config_tar_url),
+            hostname: gethostname::gethostname().into_string().unwrap(),
             ..Default::default()
         };
         config.reload_config().await;
@@ -432,9 +422,8 @@ impl HarvesterConfig {
 #[derive(Default)]
 pub struct RefineryConfig {
     datastores: HashMap<String, Datastore>,
-    checkers: HashMap<String, CheckerInfo>,
     cnc: Option<Cnc>,
-    config_dir: String,
+    pub config_dir: String,
     config_tar_url: String,
     pub version: Option<String>,
 }
@@ -444,10 +433,6 @@ impl CncConfigHandler for RefineryConfig {}
 impl RefineryConfig {
     pub fn get_datastores(&self) -> &HashMap<String, Datastore> {
         &self.datastores
-    }
-
-    pub fn get_checkers(&self) -> &HashMap<String, CheckerInfo> {
-        &self.checkers
     }
 
     pub fn get_cnc_config(&self) -> &Cnc {
@@ -460,18 +445,15 @@ impl RefineryConfig {
         }
 
         self.datastores = RefineryConfig::read_items::<Datastore>(&self.config_dir, "datastore").unwrap();
-        self.checkers = RefineryConfig::read_items::<CheckerInfo>(&self.config_dir, "checker_info").unwrap();
         self.cnc = Some(RefineryConfig::read_item::<Cnc>(&self.config_dir, "cnc").unwrap());
 
         debug!("datastores: {:?}", &self.datastores);
-        debug!("checkers: {:?}", &self.checkers);
         debug!("cnc: {:?}", &self.cnc);
     }
 
     pub async fn new(config_dir: &str, config_tar_url: &str) -> RefineryConfig {
         let mut config = RefineryConfig {
             datastores: HashMap::new(),
-            checkers: HashMap::new(),
             config_dir: String::from(config_dir),
             config_tar_url: String::from(config_tar_url),
             ..Default::default()

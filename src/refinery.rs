@@ -1,24 +1,24 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+
 use axum::{Extension, Router};
 use axum::routing::get;
-use log::{debug, error, info, warn};
-use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
-use rdkafka::consumer::{Consumer, StreamConsumer};
-use rdkafka::message::Headers;
+use log::{debug, error};
+use rdkafka::ClientConfig;
+use rdkafka::consumer::StreamConsumer;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
+use tokio::time::sleep;
 
-use crate::common::config::{CheckerInfo, REFINERY_PORT_DEFAULT, RefineryConfig};
+use crate::common::config::{CncConfigHandler, CollectorInfo, HarvesterConfig, HostGroup, REFINERY_PORT_DEFAULT, RefineryConfig};
 use crate::common::store_channel::StoreChannel;
-use crate::harvester::Harvester;
-use crate::model::kafka::HostsKafka;
-use crate::refinery::checker::{Checker, HttpAlertChecker, StdoutAlertChecker};
-use crate::refinery::receiver::{KafkaReceiver, Receiver};
+use crate::model::refinery::{AlertMessage, CollectorState, Host, Status};
+use crate::refinery::alerter::get_alerter;
+use crate::refinery::receiver::{HostsKafkaReceiver, InfosKafkaReceiver};
 
 mod receiver;
-mod checker;
+mod alerter;
 
 struct RefineryContainer {
     refinery: Arc<RwLock<Refinery>>,
@@ -46,103 +46,71 @@ impl RefineryContainer {
 pub struct Refinery {
     config: Arc<RwLock<RefineryConfig>>,
     handlers: Vec<JoinHandle<()>>,
-    channels: HashMap<String, StoreChannel>,
+    alert_channel: Option<StoreChannel<AlertMessage>>,
+    host_map: Arc<RwLock<HashMap<String, RwLock<Host>>>>,
     host_maintenance_map: Arc<RwLock<HashMap<String, bool>>>,
 }
 
 impl Refinery {
 
-    async fn create_channels(&mut self) {
-        for (checker_name, _) in self.config.read().await.get_checkers() {
-            let (tx, rx) = mpsc::channel::<String>(1000);
-            self.channels.insert(checker_name.clone(), StoreChannel { tx, rx: Some(rx) });
-        }
+    async fn run_infos_alerter(&mut self) {
+        let rx = self.alert_channel.as_mut().unwrap().rx.take().unwrap();
+        let mut alerter = get_alerter(&self.config.read().await.get_cnc_config().refinery.alerter, rx);
+        let handler = tokio::spawn(async move {
+            alerter.run().await;
+        });
+        self.handlers.push(handler);
     }
 
-    async fn run_checkers(&mut self) {
-        for (checker_name, checker) in self.config.write().await.get_checkers() {
-            let kind = checker.kind.as_str();
-            let rx = self
-                .channels
-                .get_mut(checker_name)
-                .unwrap()
-                .rx.take()
-                .unwrap();
-            match kind {
-                "stdout_alert" => {
-                    let handler = tokio::spawn(async move {
-                        let mut checker = StdoutAlertChecker {
-                            receiver_channel: rx,
-                        };
-                        checker.check().await;
-                    });
-                    self.handlers.push(handler);
-                }
-                "http_alert" => {
-                    let checker_config = CheckerInfo {
-                        kind: checker.kind.clone(),
-                        source: checker.source.clone(),
-                        param: checker.param.clone(),
-                    };
-                    let handler = tokio::spawn(async move {
-                        let mut checker = HttpAlertChecker {
-                            receiver_channel: rx,
-                            checker_config,
-                        };
-                        checker.check().await;
-                    });
-                    self.handlers.push(handler);
-                }
-                _ => {
-                    panic!("Unknown checker kind: {}", kind);
-                }
-            }
-        }
-    }
+    async fn run_history_checker(&mut self) {
+        let host_map = Arc::clone(&self.host_map);
+        let host_maintenance_map = Arc::clone(&self.host_maintenance_map);
+        let handler = tokio::spawn(async move {
+            let host_map = host_map;
+            let host_maintenance_map = host_maintenance_map;
 
-    async fn run_receivers(&mut self) {
-        for (checker_name, checker) in self.config.read().await.get_checkers() {
-            let tx = self.channels
-                .get(checker_name)
-                .unwrap()
-                .tx
-                .clone();
-            let source = &checker.source;
-            let config = self.config.read().await;
-            let source_datastore = config.get_datastores().get(source)
-                .expect("Unexpected source");
-            let source_kind = source_datastore.kind.as_str();
-            let host_maintenance_map = Arc::clone(&self.host_maintenance_map);
-            let receiver = match source_kind {
-                "kafka" => {
-                    let kafka = source_datastore.kafka.as_ref()
-                        .expect(&format!("Empty param for kafka source: {}", source));
-                    let group_instance_id = format!("refinery-{}", gethostname::gethostname().into_string().unwrap());
-                    let consumer: StreamConsumer = ClientConfig::new()
-                        .set("group.id", "refinery")
-                        .set("group.instance.id", group_instance_id)
-                        .set("bootstrap.servers", &kafka.bootstrap_servers)
-                        .set("auto.offset.reset", "latest")
-                        .create()
-                        .expect("Kafka consumer creation failed");
-                    let topic = String::from(&kafka.bootstrap_servers);
-                    KafkaReceiver {
-                        sender_channel: tx,
-                        consumer,
-                        topic,
-                        host_maintenance_map,
+            loop {
+                for (hostname, host) in host_map.read().await.iter() {
+                    if let Some(true) = host_maintenance_map.read().await.get(hostname.as_str()) {
+                        continue;
                     }
+                    host.read().await.run().await;
                 }
-                _ => panic!("Unsupported source datastore kind: {}", source_kind),
-            };
-            let handler = tokio::spawn(async move {
-                receiver.receive().await;
-            });
-            self.handlers.push(handler);
-        }
+                sleep(Duration::from_secs(60)).await;
+            }
+        });
+        self.handlers.push(handler);
     }
 
-    async fn subscribe_hosts_kafka_topic(&mut self) {
+    async fn run_infos_kafka_receiver(&mut self) {
+        let tx = self.alert_channel.as_ref().unwrap().tx.clone();
+
+        let config = self.config.read().await;
+        let kafka = &config.get_cnc_config().common.infos_kafka;
+        let group_instance_id = format!("refinery-infos-{}", gethostname::gethostname().into_string().unwrap());
+        let consumer: StreamConsumer = ClientConfig::new()
+            .set("group.id", "refinery")
+            .set("group.instance.id", group_instance_id)
+            .set("bootstrap.servers", &kafka.bootstrap_servers)
+            .set("auto.offset.reset", "latest")
+            .create()
+            .expect("Kafka consumer creation failed");
+        let topic = String::from(&kafka.topic);
+        let host_map = Arc::clone(&self.host_map);
+        let receiver = InfosKafkaReceiver {
+            alert_sender_channel: tx,
+            host_map,
+            consumer,
+            topic,
+        };
+
+        let handler = tokio::spawn(async move {
+            receiver.receive().await;
+        });
+        self.handlers.push(handler);
+    }
+
+    async fn run_hosts_kafka_receiver(&mut self) {
         let config = self.config.read().await;
         let cnc_config = config.get_cnc_config();
         let hosts_kafka = &cnc_config.common.hosts_kafka;
@@ -153,58 +121,124 @@ impl Refinery {
         let handler = tokio::spawn(async move {
             let brokers = brokers;
             let topic = topic;
-            let topics = [topic.as_str()];
             let mut host_maintenance_map = host_maintenance_map;
+            let group_instance_id = format!("refinery-hosts-{}", gethostname::gethostname().into_string().unwrap());
             let consumer: StreamConsumer = ClientConfig::new()
                 .set("group.id", "refinery")
+                .set("group.instance.id", group_instance_id)
                 .set("bootstrap.servers", &brokers)
                 .set("enable.auto.commit", "false")
                 .set("auto.offset.reset", "earliest")
                 .create()
                 .unwrap();
-            consumer
-                .subscribe(&topics)
-                .unwrap();
-
-            let metadata = consumer.fetch_metadata(Some(topic.as_str()), Duration::from_secs(10)).unwrap();
-            for partition in metadata.topics().iter().flat_map(|t| t.partitions()) {
-                let mut tpl = TopicPartitionList::new();
-                tpl.add_partition_offset(topic.as_str(), partition.id(), Offset::Beginning).unwrap();
-                consumer.assign(&tpl).unwrap();
-                consumer.seek_partitions(tpl, Duration::from_secs(10)).unwrap();
-            }
-            loop {
-                match consumer.recv().await {
-                    Err(e) => error!("error: {}", e),
-                    Ok(m) => {
-                        if let Some(Ok(s)) = m.payload_view::<str>() {
-                            let host = String::from_utf8(Vec::from(m.key().unwrap())).unwrap();
-                            let data: HostsKafka = serde_json::from_str(s).unwrap();
-                            host_maintenance_map.write().await.insert(host, data.in_maintenance);
-                        }
-                    }
-                }
-            }
+            HostsKafkaReceiver {
+                consumer,
+                topic,
+                host_maintenance_map,
+            }.receive().await;
         });
         self.handlers.push(handler);
     }
+
+    async fn initialize(&mut self) {
+        // TODO: make buffer size configurable?
+        let (tx, rx) = mpsc::channel::<AlertMessage>(1000);
+        self.alert_channel = Some(StoreChannel {tx, rx: Some(rx)});
+
+
+        self.host_map.write().await.clear();
+        let config_dir = &self.config.read().await.config_dir;
+
+        let mut group_to_host_map = RefineryConfig::read_items::<HostGroup>(
+            config_dir,
+            "host_group"
+        ).unwrap();
+
+        let mut all_hosts = HashSet::new();
+        for (_, host_group) in &group_to_host_map {
+            all_hosts.extend(host_group.members.clone());
+        }
+        group_to_host_map.insert(String::from("all"), HostGroup {members: all_hosts});
+
+        let collector_infos = HarvesterConfig::read_items::<CollectorInfo>(
+            config_dir,
+            "collector_info",
+        ).unwrap();
+
+
+        for (collector_info_key, collector_info) in collector_infos {
+            let mut state = CollectorState {
+                hostname: "".to_string(),
+                description: collector_info.description,
+                host_group_name: collector_info.host_group_name,
+                retry_interval_s: collector_info.retry_interval_s,
+                max_retries: collector_info.max_retries,
+                notification_interval_s: collector_info.notification_interval_s,
+                last_notified_time: SystemTime::now(),
+                last_updated_time: SystemTime::now(),
+                failed_count: 0,
+                status: Status::Ok,
+                last_msg: "".to_string(),
+            };
+
+            let hosts = match group_to_host_map.get(&state.host_group_name) {
+                Some(host_group) => &host_group.members,
+                None => continue,
+            };
+
+            for host in hosts {
+                let mut _host_map = self.host_map.write().await;
+                let mut host_obj = match _host_map.get(host) {
+                    Some(host_obj) => host_obj,
+                    None => {
+                        let host_obj = Host {
+                            collector_states: Arc::new(RwLock::new(HashMap::new())),
+                            sender_channel: self.alert_channel.as_ref().unwrap().tx.clone(),
+                        };
+                        _host_map.insert(host.clone(), RwLock::new(host_obj));
+                        _host_map.get(host).unwrap()
+                    }
+                }.read().await;
+                let mut states = host_obj.collector_states.write().await;
+                match states.get(&collector_info_key) {
+                    Some(collector_state) => {
+                        error!("collector_state({}) for host {} already exists.", &collector_info_key, host);
+                        continue;
+                    },
+                    None => {
+                        let state = CollectorState {
+                            hostname: host.clone(),
+                            ..state.clone()
+                        };
+                        states.insert(collector_info_key.clone(), RwLock::new(state));
+
+                        states.get(&collector_info_key).unwrap()
+                    }
+                };
+            }
+
+        }
+    }
     
     async fn stop(&mut self) {
-        for (_, store_channel) in self.channels.drain() {
-            drop(store_channel.tx);
-        }
-        self.channels.clear();
+        self.alert_channel.take();
         debug!("Stopping refinery...");
         while let Some(h) = self.handlers.pop() {
             h.abort();
         }
+        self.host_map.write().await.clear();
+        self.host_maintenance_map.write().await.clear();
     }
 
     async fn start(&mut self) {
-        self.subscribe_hosts_kafka_topic().await;
-        self.create_channels().await;
-        self.run_checkers().await;
-        self.run_receivers().await;
+        self.initialize().await;
+        self.run_infos_alerter().await;
+        debug!("Start hosts kafka receiver");
+        self.run_hosts_kafka_receiver().await;
+        debug!("Start infos kafka receiver");
+        self.run_infos_kafka_receiver().await;
+        debug!("Start history checker");
+        self.run_history_checker().await;
     }
     
     async fn reload(Extension(refinery_container): Extension<Arc<RwLock<RefineryContainer>>>) {
@@ -239,7 +273,8 @@ impl Refinery {
         Arc::new(RwLock::new(Refinery {
             config,
             handlers: vec![],
-            channels: HashMap::new(),
+            alert_channel: None,
+            host_map: Arc::new(RwLock::new(HashMap::new())),
             host_maintenance_map: Arc::new(RwLock::new(HashMap::new())),
         }))
     }

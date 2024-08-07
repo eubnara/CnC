@@ -5,11 +5,24 @@ cluster_name = "cnc"
 bootstrap_servers = "localhost:9092"
 topic = "hosts"
 
+[common.infos_kafka]
+bootstrap_servers = "localhost:9092"
+topic = "infos"
+
 [harvester]
 #port = 10023
 
 [refinery]
 #port = 10024
+
+[refinery.alerter]
+kind = "stdout"
+
+#[refinery.alerter]
+#kind = "http"
+#[refinery.alerter.param]
+#url = "http://127.0.0.1:8080"
+
 
 [config_updater]
 #port = 10025
