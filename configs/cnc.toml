@@ -1,0 +1,51 @@
+[common]
+cluster_name = "cnc"
+
+[common.hosts_kafka]
+bootstrap_servers = "localhost:9092"
+topic = "hosts"
+
+[common.infos_kafka]
+bootstrap_servers = "localhost:9092"
+topic = "infos"
+
+[harvester]
+#port = 10023
+
+[refinery]
+#port = 10024
+
+[refinery.alerter]
+kind = "stdout"
+
+#[refinery.alerter]
+#kind = "http"
+#[refinery.alerter.param]
+#url = "http://127.0.0.1:8080"
+
+
+[config_updater]
+#port = 10025
+poll_interval_s = 3
+config_git_url = "https://github.com/eubnara/CNC.git"
+config_git_branch = "prototype"
+config_git_subdir = "configs/"
+
+[config_updater.ambari]
+url = "http://127.0.0.1:8080"
+##user = "admin" 
+#password_file = "ambari_password.txt"
+
+[config_updater.uploader]
+kind = "http"
+url = "http://localhost:8000/cnc_config.tar.gz"
+
+[config_updater.uploader.param]
+method = "POST"
+
+#[config_updater.uploader]
+#kind = "webhdfs"
+#url = "https://ambari-agent-1.example.com:9871/webhdfs/v1/user/ambari-qa/cnc_config_latest.tar.gz?op=CREATE&overwrite=true"
+
+#[config_updater.uploader.param]
+#secure = true
