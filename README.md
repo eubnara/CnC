@@ -1,5 +1,7 @@
-# GMS
-General Monitoring System
+# CnC
+
+Collect And Check (name motivated by C&C Harvester, Refinery)\
+General monitoring system for Hadoop Cluster operated by Apache Ambari.
 
 ```
 # please refer to https://fede1024.github.io/rust-rdkafka/rdkafka/index.html#installation
@@ -37,5 +39,5 @@ RUST_LOG=debug cargo run -- config_updater --config-dir ./configs
 
 
 
-# configuration
+## configuration
 
